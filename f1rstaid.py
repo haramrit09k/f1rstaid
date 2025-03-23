@@ -154,6 +154,7 @@ class F1rstAidApp:
         if not api_key:
             logging.error("OPENAI_API_KEY not found in environment variables")
             return False
+        os.environ["OPENAI_API_KEY"] = api_key
         return True
     
     def _is_relevant_question(self, question: str) -> Tuple[bool, str]:

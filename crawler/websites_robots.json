@@ -1,0 +1,4 @@
+{
+  "https://iso.mit.edu": "User-agent: * Disallow: /wp-admin/ Allow: /wp-admin/admin-ajax.php Sitemap: https://iso.mit.edu/wp-sitemap.xml",
+  "https://www.cmu.edu/oie": ""
+}

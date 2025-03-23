@@ -113,11 +113,44 @@ class F1rstAidApp:
         except Exception as e:
             logging.error(f"Initialization failed: {str(e)}")
             return False
+        
+        
+    def get_secret(self, group, key, env_var=None):
+        """
+        Retrieve a secret from st.secrets first, then fall back to environment variables.
+        
+        Parameters:
+        group (str): The group name in the TOML configuration (e.g., "openai").
+        key (str): The key within that group (e.g., "api_key").
+        env_var (str): Optional environment variable name. If not provided,
+                        defaults to GROUP_KEY in uppercase (e.g., "OPENAI_API_KEY").
+        
+        Returns:
+        The secret value or None if not found.
+        """
+        # Determine the environment variable name if not provided.
+        if env_var is None:
+            env_var = f"{group.upper()}_{key.upper()}"
+            
+        logging.info(f"Fetching secret: {group}/{key}")
+        logging.info(f"Environment variable: {env_var}")
+        
+        # Try to fetch from st.secrets.
+        try:
+        # Check if st.secrets exists and has the requested group/key.
+            if hasattr(st, "secrets") and st.secrets:
+                if group in st.secrets and key in st.secrets[group]:
+                    return st.secrets[group][key]
+        except Exception as e:
+                logging.info(f"st.secrets not available: {e}")
+        
+        # Fallback to using os.getenv.
+        return os.getenv(env_var)
     
     def _check_environment(self) -> bool:
         """Verify environment setup."""
         load_dotenv()
-        api_key = os.getenv('OPENAI_API_KEY')
+        api_key = self.get_secret("openai", "api_key")
         if not api_key:
             logging.error("OPENAI_API_KEY not found in environment variables")
             return False

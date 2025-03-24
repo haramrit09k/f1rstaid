@@ -15,26 +15,53 @@ import time
 # Configure logging to output to both a file and the console.
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.FileHandler("crawler.log"), logging.StreamHandler()]
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.FileHandler("crawler.log"), logging.StreamHandler()],
 )
 logger = logging.getLogger(__name__)
 
 # List of base URLs you want to crawl.
 base_urls = [
-    "https://iso.mit.edu",    # Example site with wp-admin rules.
-    "https://www.cmu.edu/oie"   # Example site with custom disallowed paths.
+    "https://iso.mit.edu",  # Example site with wp-admin rules.
+    "https://www.cmu.edu/oie",  # Example site with custom disallowed paths.
 ]
 
 # Keywords for F-1 student relevance.
 f1_keywords = [
-    "CPT", "Curricular Practical Training", "OPT", "Optional Practical Training", "international student", "foreign student", "F-1 visa", "F1 visa", "student visa", "international tax", "international tax return", "social security tax", "medicare tax", "employment tax", "tax filing", "tax obligations", "tax return", "tax guide", "taxes for students", "taxes for international students", "taxes for foreign students", "taxes for F-1 students", "taxes for F1 students", "taxes for foreign scholars", "taxes for foreign researchers", "taxes for foreign exchange visitors"
+    "CPT",
+    "Curricular Practical Training",
+    "OPT",
+    "Optional Practical Training",
+    "international student",
+    "foreign student",
+    "F-1 visa",
+    "F1 visa",
+    "student visa",
+    "international tax",
+    "international tax return",
+    "social security tax",
+    "medicare tax",
+    "employment tax",
+    "tax filing",
+    "tax obligations",
+    "tax return",
+    "tax guide",
+    "taxes for students",
+    "taxes for international students",
+    "taxes for foreign students",
+    "taxes for F-1 students",
+    "taxes for F1 students",
+    "taxes for foreign scholars",
+    "taxes for foreign researchers",
+    "taxes for foreign exchange visitors",
 ]
 
 # Files for output and checkpointing.
-ROBOTS_MAPPING_FILE = "websites_robots.json"   # Mapping of base URL to robots.txt (single-line).
-RELEVANT_URLS_FILE = "relevant_urls.txt"         # Final list of relevant URLs.
-CHECKPOINT_FILE = "crawler_state.json"           # Checkpoint file for pause/resume.
+ROBOTS_MAPPING_FILE = (
+    "websites_robots.json"  # Mapping of base URL to robots.txt (single-line).
+)
+RELEVANT_URLS_FILE = "relevant_urls.txt"  # Final list of relevant URLs.
+CHECKPOINT_FILE = "crawler_state.json"  # Checkpoint file for pause/resume.
 
 # Set to True to resume from a previous checkpoint if available.
 RESUME = True
@@ -43,40 +70,40 @@ RESUME = True
 # HELPER FUNCTIONS
 # ---------------------------
 
+
 def get_robots_txt(base_url):
     """
     Download the robots.txt with retries and proxy handling
     """
     robots_url = base_url.rstrip("/") + "/robots.txt"
     session = requests.Session()
-    
+
     # Configure retries
-    retries = Retry(
-        total=3,
-        backoff_factor=0.3,
-        status_forcelist=[500, 502, 503, 504]
-    )
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
+    retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+
     try:
         response = session.get(
             robots_url,
             timeout=10,
-            proxies={'http': None, 'https': None},  # Bypass proxies
+            proxies={"http": None, "https": None},  # Bypass proxies
             headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            },
         )
         if response.status_code == 200:
             single_line = " ".join(response.text.split())
             logger.info(f"Fetched robots.txt from {robots_url}")
             return single_line
         else:
-            logger.warning(f"Received status code {response.status_code} for {robots_url}")
+            logger.warning(
+                f"Received status code {response.status_code} for {robots_url}"
+            )
             return ""
     except Exception as e:
         logger.error(f"Error fetching {robots_url}: {e}")
         return ""
+
 
 def parse_robots_txt(robots_txt):
     """
@@ -91,14 +118,23 @@ def parse_robots_txt(robots_txt):
     tokens = robots_txt.split()
     for i, token in enumerate(tokens):
         if token.lower().startswith("disallow:"):
-            path = token[9:].strip() if len(token) > 9 else (tokens[i+1] if i+1 < len(tokens) else "")
+            path = (
+                token[9:].strip()
+                if len(token) > 9
+                else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            )
             if path:
                 disallowed.append(path)
         elif token.lower().startswith("allow:"):
-            path = token[6:].strip() if len(token) > 6 else (tokens[i+1] if i+1 < len(tokens) else "")
+            path = (
+                token[6:].strip()
+                if len(token) > 6
+                else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            )
             if path:
                 allowed.append(path)
     return disallowed, allowed
+
 
 def is_allowed(url, disallowed, allowed):
     """
@@ -116,6 +152,7 @@ def is_allowed(url, disallowed, allowed):
             return False
     return True
 
+
 def extract_main_content(soup):
     """
     Remove common boilerplate elements from the soup and return the main text.
@@ -124,7 +161,7 @@ def extract_main_content(soup):
     # Remove boilerplate elements.
     for tag in soup(["nav", "header", "footer", "aside"]):
         tag.decompose()
-    
+
     # Optionally, if there's a main content tag, focus on that.
     main = soup.find("main")
     if main:
@@ -133,6 +170,7 @@ def extract_main_content(soup):
         # Fallback: return text from entire page.
         text = soup.get_text(separator=" ", strip=True)
     return text
+
 
 def is_relevant(content):
     """
@@ -149,7 +187,7 @@ def is_relevant(content):
         "work authorization": 3,
         "employment authorization": 3,
         "internship": 2,
-        "practical training": 3
+        "practical training": 3,
     }
     # Negative keywords to avoid false positives from boilerplate or generic content.
     negative_keywords = {
@@ -158,17 +196,17 @@ def is_relevant(content):
         "global affairs": 2,
         "study abroad": 2,
         "university homepage": 2,
-        "contact us": 2
+        "contact us": 2,
     }
-    
+
     text = content.lower()
     score = 0
-    
+
     # Count positive occurrences.
     for keyword, weight in positive_keywords.items():
         occurrences = text.count(keyword)
         score += weight * occurrences
-        
+
     # Subtract points for negative occurrences.
     for keyword, weight in negative_keywords.items():
         occurrences = text.count(keyword)
@@ -177,25 +215,32 @@ def is_relevant(content):
     # Define a threshold that you can adjust based on experimentation.
     return score >= 20
 
+
 def save_checkpoint(state):
     """Save the crawler state to a checkpoint file."""
     try:
         with open(CHECKPOINT_FILE, "w") as f:
             json.dump(state, f, indent=2)
-        logger.info(f"Checkpoint saved with {len(state['visited'])} visited URLs, {len(state['to_visit'])} URLs to visit, and {len(state['relevant_urls'])} relevant URLs.")
+        logger.info(
+            f"Checkpoint saved with {len(state['visited'])} visited URLs, {len(state['to_visit'])} URLs to visit, and {len(state['relevant_urls'])} relevant URLs."
+        )
     except Exception as e:
         logger.error(f"Error saving checkpoint: {e}")
+
 
 def load_checkpoint():
     """Load the crawler state from a checkpoint file."""
     try:
         with open(CHECKPOINT_FILE, "r") as f:
             state = json.load(f)
-        logger.info(f"Resumed from checkpoint: {len(state['visited'])} visited URLs, {len(state['to_visit'])} URLs to visit, and {len(state['relevant_urls'])} relevant URLs.")
+        logger.info(
+            f"Resumed from checkpoint: {len(state['visited'])} visited URLs, {len(state['to_visit'])} URLs to visit, and {len(state['relevant_urls'])} relevant URLs."
+        )
         return state
     except Exception as e:
         logger.error(f"Error loading checkpoint: {e}")
         return None
+
 
 # ---------------------------
 # STEP 1: Build Robots.txt Mapping for All Base URLs
@@ -215,11 +260,7 @@ logger.info(f"Saved robots.txt mapping to {ROBOTS_MAPPING_FILE}")
 # ---------------------------
 
 # Overall state structure
-state = {
-    "visited": {},
-    "to_visit": {},
-    "relevant_urls": {}
-}
+state = {"visited": {}, "to_visit": {}, "relevant_urls": {}}
 
 # For each base URL, we'll store separate lists in our state.
 for base_url in base_urls:
@@ -238,19 +279,19 @@ try:
     for base_url in base_urls:
         logger.info(f"Starting crawl for {base_url}")
         domain = urlparse(base_url).netloc
-        
+
         # Create a persistent session with retries
         session = requests.Session()
         retries = Retry(
-            total=3,
-            backoff_factor=0.5,
-            status_forcelist=[500, 502, 503, 504]
+            total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]
         )
-        session.mount('https://', HTTPAdapter(max_retries=retries))
-        
+        session.mount("https://", HTTPAdapter(max_retries=retries))
+
         # Parse robots.txt for this site
         disallowed, allowed = parse_robots_txt(robots_mapping.get(base_url, ""))
-        logger.info(f"For {base_url}: Disallowed paths: {disallowed} | Allowed paths: {allowed}")
+        logger.info(
+            f"For {base_url}: Disallowed paths: {disallowed} | Allowed paths: {allowed}"
+        )
 
         # Load state for this base_url if available
         visited = set(state["visited"].get(base_url, []))
@@ -272,25 +313,27 @@ try:
                 response = session.get(
                     url,
                     timeout=15,
-                    proxies={'http': None, 'https': None},  # Explicitly disable proxies
+                    proxies={"http": None, "https": None},  # Explicitly disable proxies
                     headers={
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-                        'Accept-Language': 'en-US,en;q=0.9'
-                    }
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
                 )
                 # PythonAnywhere whitelist check
                 if "pythonanywhere" in response.text.lower():
                     logger.error("Blocked by PythonAnywhere's whitelist")
                     raise Exception("Domain not whitelisted on PythonAnywhere")
-                
+
                 if response.status_code != 200:
-                    logger.warning(f"Non-200 status code {response.status_code} for {url}")
+                    logger.warning(
+                        f"Non-200 status code {response.status_code} for {url}"
+                    )
                     continue
             except Exception as e:
                 logger.error(f"Error accessing {url}: {e}")
                 time.sleep(5)  # Add delay between retries
                 continue
-            
+
             page_text = response.text
             soup = BeautifulSoup(page_text, "html.parser")
             # Extract the main content to avoid boilerplate text.
@@ -303,10 +346,13 @@ try:
 
             soup = BeautifulSoup(page_text, "html.parser")
             for a_tag in soup.find_all("a", href=True):
-                link = urljoin(url, a_tag['href'])
+                link = urljoin(url, a_tag["href"])
                 parsed_link = urlparse(link)
                 # Follow only valid HTTP links within the same domain.
-                if parsed_link.scheme in ("http", "https") and domain in parsed_link.netloc:
+                if (
+                    parsed_link.scheme in ("http", "https")
+                    and domain in parsed_link.netloc
+                ):
                     if not is_allowed(link, disallowed, allowed):
                         logger.debug(f"Link {link} on {url} is disallowed, skipping.")
                         continue
@@ -323,7 +369,9 @@ try:
                 save_checkpoint(state)
                 batch_counter = 0
 
-        logger.info(f"Finished crawling {base_url}. Visited {len(visited)} pages; found {len(relevant_urls)} relevant pages.")
+        logger.info(
+            f"Finished crawling {base_url}. Visited {len(visited)} pages; found {len(relevant_urls)} relevant pages."
+        )
         # Update state in case we finished this base_url.
         state["visited"][base_url] = list(visited)
         state["to_visit"][base_url] = to_visit

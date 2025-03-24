@@ -19,16 +19,15 @@ from langchain_core.prompts import PromptTemplate
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('f1rstaid.log'),
-        logging.StreamHandler()
-    ]
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[logging.FileHandler("f1rstaid.log"), logging.StreamHandler()],
 )
+
 
 @dataclass
 class AppConfig:
     """Configuration for F1rstAid application."""
+
     model_name: str = "gpt-3.5-turbo"
     vector_store_path: str = "faiss_index"
     search_k: int = 3
@@ -48,7 +47,13 @@ Ask me specific questions like:
 - 'How long does OPT processing take after submitting Form I-765?'
 - 'What are the CPT requirements for summer internships?'
                 """,
-            "triggers": ["what can you do", "how to use", "help", "expertise", "what do i ask you"]
+            "triggers": [
+                "what can you do",
+                "how to use",
+                "help",
+                "expertise",
+                "what do i ask you",
+            ],
         },
         "question_guidance": {
             "response": """
@@ -60,93 +65,95 @@ Ask me specific questions like:
 
 Example: 'What documents do I need for STEM OPT extension?'\n
                 """,
-            "triggers": ["ask a question", "formulate", "effective questions", "how to ask you"]
-        }
+            "triggers": [
+                "ask a question",
+                "formulate",
+                "effective questions",
+                "how to ask you",
+            ],
+        },
     }
+
 
 class F1rstAidApp:
     """Main application class for F1rstAid."""
 
-    
-    
     def __init__(self, config: AppConfig):
         self.config = config
         self.qa_chain = None
         self.embeddings = None
         self.db = None
-        
+
     def initialize(self) -> bool:
         """Initialize the application components."""
         try:
             if not self._check_environment():
                 return False
-                
+
             logging.info("Initializing embeddings...")
             self.embeddings = OpenAIEmbeddings()
-            
+
             logging.info("Loading vector store...")
             self.db = FAISS.load_local(
                 self.config.vector_store_path,
                 self.embeddings,
-                allow_dangerous_deserialization=True
+                allow_dangerous_deserialization=True,
             )
-            
+
             logging.info("Setting up retriever and QA chain...")
             retriever = self.db.as_retriever(
-                search_type="similarity",
-                search_kwargs={"k": self.config.search_k}
+                search_type="similarity", search_kwargs={"k": self.config.search_k}
             )
-            
+
             self.qa_chain = RetrievalQA.from_chain_type(
                 llm=ChatOpenAI(
                     model_name=self.config.model_name,
-                    temperature=self.config.temperature
+                    temperature=self.config.temperature,
                 ),
                 retriever=retriever,
                 chain_type="stuff",
-                return_source_documents=True
+                return_source_documents=True,
             )
-            
+
             logging.info("Application initialized successfully")
             return True
-            
+
         except Exception as e:
             logging.error(f"Initialization failed: {str(e)}")
             return False
-        
-        
+
     def get_secret(self, group, key, env_var=None):
         """
         Retrieve a secret from st.secrets first, then fall back to environment variables.
-        
+
         Parameters:
         group (str): The group name in the TOML configuration (e.g., "openai").
         key (str): The key within that group (e.g., "api_key").
         env_var (str): Optional environment variable name. If not provided,
                         defaults to GROUP_KEY in uppercase (e.g., "OPENAI_API_KEY").
-        
+
         Returns:
         The secret value or None if not found.
         """
         # Determine the environment variable name if not provided.
         if env_var is None:
             env_var = f"{group.upper()}_{key.upper()}"
-            
+
         logging.info(f"Fetching secret: {group}/{key}")
         logging.info(f"Environment variable: {env_var}")
-        
+
         # Try to fetch from st.secrets.
         try:
-        # Check if st.secrets exists and has the requested group/key.
+            # Check if st.secrets exists and has the requested group/key.
             if hasattr(st, "secrets") and st.secrets:
                 if group in st.secrets and key in st.secrets[group]:
                     return st.secrets[group][key]
         except Exception as e:
-                logging.info(f"st.secrets not available: {e}")
-        
+            logging.info(f"st.secrets not available: {e}")
+
         # Fallback to using os.getenv.
         return os.getenv(env_var)
-    
+
     def _check_environment(self) -> bool:
         """Verify environment setup."""
         load_dotenv()
@@ -156,11 +163,11 @@ class F1rstAidApp:
             return False
         os.environ["OPENAI_API_KEY"] = api_key
         return True
-    
+
     def _is_relevant_question(self, question: str) -> Tuple[bool, str]:
         """Check relevance with layered analysis."""
         clean_q = question.strip().lower()
-        
+
         # First check for predefined help questions
         for entry in self.config.GENERIC_HELP_QUESTIONS.values():
             if any(trigger in clean_q for trigger in entry["triggers"]):
@@ -176,19 +183,19 @@ class F1rstAidApp:
 
             Question: {question}"""
         )
-        
+
         try:
             llm = ChatOpenAI(temperature=0)
             chain = LLMChain(llm=llm, prompt=relevance_prompt)
             response = chain.invoke({"question": question})["text"]
-            
+
             # Parse structured response
             relevance = "relevance: yes" in response.lower()
             reason = self._parse_response_section(response, "Reason:")
             guidance = self._parse_response_section(response, "Guidance:")
-            
+
             return relevance, f"{reason} {guidance}"
-        
+
         except Exception as e:
             logging.error(f"Relevance check failed: {str(e)}")
             return False, "Error analyzing question. Please try again."
@@ -208,7 +215,7 @@ class F1rstAidApp:
             if not question.strip():
                 return {
                     "result": "Please enter a question about F-1 visas, OPT, or CPT.",
-                    "source_documents": []
+                    "source_documents": [],
                 }
 
             # Check for predefined help questions
@@ -216,14 +223,11 @@ class F1rstAidApp:
             for key, entry in self.config.GENERIC_HELP_QUESTIONS.items():
                 if any(trigger in clean_q for trigger in entry["triggers"]):
                     logging.info(f"Help question detected: {key}")
-                    return {
-                        "result": entry["response"],
-                        "source_documents": []
-                    }
+                    return {"result": entry["response"], "source_documents": []}
 
             # LLM relevance analysis
             relevant, explanation = self._is_relevant_question(question)
-            
+
             if not relevant:
                 return {
                     "result": f"""
@@ -235,11 +239,13 @@ class F1rstAidApp:
 - Maintaining F-1 status
 - STEM OPT requirements
 - Travel signatures""",
-                    "source_documents": []
+                    "source_documents": [],
                 }
 
             # Process relevant questions
-            answer = self.qa_chain.invoke({"query": question, "return_only_outputs": True})
+            answer = self.qa_chain.invoke(
+                {"query": question, "return_only_outputs": True}
+            )
             logging.info(f"Answer generated: {answer}")
             return answer
 
@@ -247,27 +253,29 @@ class F1rstAidApp:
             logging.error(f"Processing error: {str(e)}")
             return {
                 "result": "Error processing request. Please try again.",
-                "source_documents": []
+                "source_documents": [],
             }
 
     @staticmethod
     def _get_source_link(source: str, doc_type: str) -> str:
         """Generate appropriate hyperlink based on source type."""
         try:
-            if doc_type == 'web' or doc_type == 'reddit':
+            if doc_type == "web" or doc_type == "reddit":
                 # Check if URL is valid
                 parsed = urlparse(source)
                 if parsed.scheme and parsed.netloc:
                     return f"<a href='{source}' target='_blank'>{source} 🔗</a>"
                 else:
                     return "Invalid URL ❌"
-            elif doc_type == 'pdf':
+            elif doc_type == "pdf":
                 # Using st.markdown's native PDF handling
                 filename = os.path.basename(source)
-                full_path = os.path.abspath(os.path.join('docs', filename))
+                full_path = os.path.abspath(os.path.join("docs", filename))
                 if os.path.exists(full_path):
-                    return f"<a href='data:application/pdf;base64,{F1rstAidApp._encode_pdf(full_path)}' " \
-                            f"download='{filename}'>Download {filename} 📄</a>"
+                    return (
+                        f"<a href='data:application/pdf;base64,{F1rstAidApp._encode_pdf(full_path)}' "
+                        f"download='{filename}'>Download {filename} 📄</a>"
+                    )
             return "Source unavailable ❌"
         except Exception as e:
             logging.error(f"Error creating source link: {e}")
@@ -277,8 +285,9 @@ class F1rstAidApp:
     def _encode_pdf(file_path: str) -> str:
         """Encode PDF file to base64 for browser download."""
         import base64
+
         try:
-            with open(file_path, 'rb') as file:
+            with open(file_path, "rb") as file:
                 return base64.b64encode(file.read()).decode()
         except Exception as e:
             logging.error(f"Error encoding PDF {file_path}: {e}")
@@ -288,21 +297,23 @@ class F1rstAidApp:
     def clean_markdown(text: str) -> str:
         """Remove common markdown link and emphasis syntax from text."""
         # Remove code blocks
-        text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
-        text = re.sub(r'""".*?"""', '', text, flags=re.DOTALL)
-        
+        text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
+        text = re.sub(r'""".*?"""', "", text, flags=re.DOTALL)
+
         # Remove inline code markers (`)
-        text = re.sub(r'`([^`]+)`', r'\1', text)
-        
+        text = re.sub(r"`([^`]+)`", r"\1", text)
+
         # Remove markdown links (updated regex to handle truncated URLs)
-        text = re.sub(r'\[([^\]]+)\]\([^)]*\)?', r'\1', text)  # Added optional closing )
-        
+        text = re.sub(
+            r"\[([^\]]+)\]\([^)]*\)?", r"\1", text
+        )  # Added optional closing )
+
         # Remove emphasis markers: *, _, ~
-        text = re.sub(r'[*_~]', '', text)
-        
+        text = re.sub(r"[*_~]", "", text)
+
         # Remove any leading heading markers
-        text = re.sub(r'^\s*#+\s*', '', text, flags=re.MULTILINE)
-        
+        text = re.sub(r"^\s*#+\s*", "", text, flags=re.MULTILINE)
+
         return text.strip()
 
     @staticmethod
@@ -310,16 +321,16 @@ class F1rstAidApp:
         """Format source documents for display with enhanced metadata and links."""
         sources = []
         for i, doc in enumerate(docs, 1):
-            source = doc.metadata.get('source', 'Unknown')
-            doc_type = doc.metadata.get('type', 'unknown')
-            
+            source = doc.metadata.get("source", "Unknown")
+            doc_type = doc.metadata.get("type", "unknown")
+
             # 1) Grab raw content snippet
-            raw_preview = doc.page_content[:200].replace('\n', ' ').strip()
-            
+            raw_preview = doc.page_content[:200].replace("\n", " ").strip()
+
             # 2) Clean markdown
             preview = F1rstAidApp.clean_markdown(raw_preview)
             preview = escape(preview)
-            
+
             source_block = [
                 f"<div class='source-block'>",
                 f"<h4>Source {i}</h4>",
@@ -331,10 +342,10 @@ class F1rstAidApp:
                 f"<p class='preview-text'>{preview}...</p>",
                 "</div>",
                 "</div>",
-                "</div>"
+                "</div>",
             ]
             sources.append("\n".join(source_block))
-        
+
         # css = "<style>.source-block{background-color:#ffffff;border:1px solid #e1e4e8;margin:15px 0;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.05);}.source-block h4{color:#0366d6;margin:0 0 15px 0;border-bottom:2px solid #0366d6;padding-bottom:5px;}.source-content{margin-left:10px;}.preview-box{background-color:#f6f8fa;padding:10px;border-radius:5px;margin-top:10px;}.preview-text{font-family:monospace;font-size:0.9em;line-height:1.4;white-space:pre-wrap;}a{color:#0366d6;text-decoration:none;padding:2px 4px;border-radius:3px;background-color:#f1f8ff;}a:hover{text-decoration:underline;background-color:#e1e4e8;}</style>"
 
         css = """
@@ -387,20 +398,24 @@ class F1rstAidApp:
         }
         </style>
         """
-        clean_css = F1rstAidApp.clean_markdown(css) # Clean CSS to avoid markdown issues, especially """ blocks
+        clean_css = F1rstAidApp.clean_markdown(
+            css
+        )  # Clean CSS to avoid markdown issues, especially """ blocks
         return clean_css + "\n\n\n\n".join(sources)
 
     def format_answer(self, result: str, sources: List[Document]) -> str:
         """Format answer with source context."""
-        has_reddit_sources = any(doc.metadata.get('type') == 'reddit' for doc in sources)
-        
+        has_reddit_sources = any(
+            doc.metadata.get("type") == "reddit" for doc in sources
+        )
+
         formatted_answer = result
         if has_reddit_sources:
             formatted_answer = (
                 "⚠️ Note: Some of this information comes from Reddit community experiences "
                 "and should be verified with official sources.\n\n" + formatted_answer
             )
-        
+
         return formatted_answer
 
     def display_answer(self, answer: Dict):
@@ -409,28 +424,36 @@ class F1rstAidApp:
         logging.info(f"Answer: {answer['result']}")
         formatted_answer = self.format_answer(
             F1rstAidApp.clean_markdown(answer["result"]).strip(),
-            answer.get("source_documents", [])
+            answer.get("source_documents", []),
         )
         st.markdown(formatted_answer)
-        
+
         if "source_documents" in answer:
-            st.markdown("### 📚 Source Documents", help="ℹ️ PDF links will open in default PDF viewer")
+            st.markdown(
+                "### 📚 Source Documents",
+                help="ℹ️ PDF links will open in default PDF viewer",
+            )
             official_sources = []
             community_sources = []
-            
+
             for doc in answer["source_documents"]:
-                if doc.metadata.get('type') == 'reddit':
+                if doc.metadata.get("type") == "reddit":
                     community_sources.append(doc)
                 else:
                     official_sources.append(doc)
-            
+
             if official_sources:
                 st.markdown("#### Official Sources")
-                st.markdown(self.format_sources(official_sources), unsafe_allow_html=True)
-                
+                st.markdown(
+                    self.format_sources(official_sources), unsafe_allow_html=True
+                )
+
             if community_sources:
                 st.markdown("#### Community Experiences (Reddit)")
-                st.markdown(self.format_sources(community_sources), unsafe_allow_html=True)
+                st.markdown(
+                    self.format_sources(community_sources), unsafe_allow_html=True
+                )
+
 
 def main():
     """Main application entry point."""
@@ -438,59 +461,63 @@ def main():
         # Initialize app
         config = AppConfig()
         app = F1rstAidApp(config)
-        
+
         if not app.initialize():
             st.error("Failed to initialize application. Please check logs.")
             return
-        
+
         # Setup Streamlit UI
         st.title("🎓 F1rstAid: Your F-1 Visa Helper")
         st.write("Ask me anything about F-1 visas!")
-        
+
         # Add session state for question history
-        if 'question_history' not in st.session_state:
+        if "question_history" not in st.session_state:
             st.session_state.question_history = []
-        
+
         # Question input with character limit
         max_question_length = 500
         question = st.text_input(
             "Ask your F-1 visa question:",
             max_chars=max_question_length,
-            help=f"Maximum {max_question_length} characters"
+            help=f"Maximum {max_question_length} characters",
         )
-        
+
         if st.button("Get Answer"):
             if not question:
                 st.warning("Please enter a question.")
                 return
-                
+
             with st.spinner("🔍 Researching your question..."):
                 answer = app.get_answer(question)
-                
+
                 if answer and "result" in answer:
                     st.success("✅ Answer Generated!")
                     app.display_answer(answer)
-                    
+
                     # Update question history with timestamp
-                    st.session_state.question_history.append({
-                        'question': question,
-                        'answer': answer["result"],
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    })
+                    st.session_state.question_history.append(
+                        {
+                            "question": question,
+                            "answer": answer["result"],
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        }
+                    )
                 else:
                     st.error("❌ Failed to generate answer. Please try again.")
-        
+
         # Display question history with timestamps
         if st.session_state.question_history:
             st.markdown("### Previous Questions")
             for item in reversed(st.session_state.question_history[-5:]):
-                with st.expander(f"Q: {item['question'][:50]}... ({item['timestamp']})"):
-                    st.markdown(item['answer'])
-    
+                with st.expander(
+                    f"Q: {item['question'][:50]}... ({item['timestamp']})"
+                ):
+                    st.markdown(item["answer"])
+
     except Exception as e:
         logging.error(f"Application error: {str(e)}")
         st.error("An unexpected error occurred. Please try again later.")
 
+
 if __name__ == "__main__":
     main()
-

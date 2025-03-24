@@ -182,10 +182,10 @@ docs/
 # Crawler specific files
 crawler/crawler_state.json
 crawler/relevant_urls.txt
-crawler/website_robots.json
 crawler/failed_urls.txt
 crawler/scraped_data/
 crawler/logs/
 crawler/cache/
 crawler/temp/
 !crawler/crawler.py
+crawler/websites_robots.json

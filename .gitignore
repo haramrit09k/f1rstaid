@@ -189,3 +189,6 @@ crawler/cache/
 crawler/temp/
 !crawler/crawler.py
 crawler/websites_robots.json
+relevant_urls.txt
+crawler_state.json
+websites_robots.json

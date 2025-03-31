@@ -30,7 +30,7 @@ class AppConfig:
 
     model_name: str = "gpt-3.5-turbo"
     vector_store_path: str = "faiss_index"
-    search_k: int = 3
+    search_k: int = 5
     temperature: float = 0.7
     GENERIC_HELP_QUESTIONS = {
         "help": {
@@ -111,7 +111,7 @@ class F1rstAidApp:
                     temperature=self.config.temperature,
                 ),
                 retriever=retriever,
-                chain_type="stuff",
+                chain_type="map_reduce",
                 return_source_documents=True,
             )
 

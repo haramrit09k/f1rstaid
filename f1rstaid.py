@@ -15,6 +15,7 @@ from langchain.chains import RetrievalQA, LLMChain
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
+from typing import Optional
 
 # Configure logging
 logging.basicConfig(
@@ -35,6 +36,7 @@ class AppConfig:
     GENERIC_HELP_QUESTIONS = {
         "help": {
             "response": """
+Hello! I'm F1rstAid, your virtual assistant for F-1 visa questions.
 📚 **My Expertise**:\n
 I specialize in F-1 visa regulations including:
 - OPT/CPT requirements and applications
@@ -53,6 +55,7 @@ Ask me specific questions like:
                 "help",
                 "expertise",
                 "what do i ask you",
+                "what's your name"
             ],
         },
         "question_guidance": {
@@ -102,7 +105,8 @@ class F1rstAidApp:
 
             logging.info("Setting up retriever and QA chain...")
             retriever = self.db.as_retriever(
-                search_type="similarity", search_kwargs={"k": self.config.search_k}
+                search_type="similarity", 
+                search_kwargs={"k": self.config.search_k}
             )
 
             self.qa_chain = RetrievalQA.from_chain_type(
@@ -156,10 +160,9 @@ class F1rstAidApp:
 
     def _check_environment(self) -> bool:
         """Verify environment setup."""
-        load_dotenv()
-        api_key = self.get_secret("openai", "api_key")
+        api_key = get_api_key()
         if not api_key:
-            logging.error("OPENAI_API_KEY not found in environment variables")
+            logging.error("OPENAI_API_KEY not found")
             return False
         os.environ["OPENAI_API_KEY"] = api_key
         return True
@@ -185,7 +188,7 @@ class F1rstAidApp:
         )
 
         try:
-            llm = ChatOpenAI(temperature=0)
+            llm = ChatOpenAI(temperature=0.3, max_tokens=1000)
             chain = LLMChain(llm=llm, prompt=relevance_prompt)
             response = chain.invoke({"question": question})["text"]
 
@@ -455,64 +458,167 @@ class F1rstAidApp:
                 )
 
 
+def handle_enter():
+    """Handle Enter key press in text input."""
+    if (
+        "question_input" in st.session_state 
+        and st.session_state.question_input 
+        and not st.session_state.processing
+    ):
+        process_query(st.session_state.question_input)
+
+
+def process_query(question: str):
+    """Process the user query."""
+    try:
+        if not question:
+            st.warning("Please enter a question.")
+            return
+
+        st.session_state.processing = True
+        st.session_state.cancel_query = False
+
+        with st.spinner("🔍 Researching your question..."):
+            # Check for cancellation
+            if st.session_state.cancel_query:
+                st.warning("Query cancelled by user.")
+                return
+
+            answer = app.get_answer(question)
+
+            if answer and "result" in answer:
+                st.success("✅ Answer Generated!")
+                app.display_answer(answer)
+
+                # Update question history with timestamp
+                st.session_state.question_history.append({
+                    "question": question,
+                    "answer": answer["result"],
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                })
+            else:
+                st.error("❌ Failed to generate answer. Please try again.")
+
+    except Exception as e:
+        logging.error(f"Query processing error: {str(e)}")
+        st.error("An error occurred while processing your query.")
+    finally:
+        st.session_state.processing = False
+
+
+def get_api_key() -> Optional[str]:
+    """Get API key from session state or environment."""
+    if "OPENAI_API_KEY" in st.session_state:
+        return st.session_state.OPENAI_API_KEY
+    return os.getenv("OPENAI_API_KEY")
+
+def set_api_key(api_key: str) -> None:
+    """Set API key in session state and environment."""
+    st.session_state.OPENAI_API_KEY = api_key
+    os.environ["OPENAI_API_KEY"] = api_key
+
+
 def main():
     """Main application entry point."""
     try:
-        # Initialize app
-        config = AppConfig()
-        app = F1rstAidApp(config)
-
-        if not app.initialize():
-            st.error("Failed to initialize application. Please check logs.")
-            return
-
         # Setup Streamlit UI
         st.title("🎓 F1rstAid: Your F-1 Visa Helper")
-        st.write("Ask me anything about F-1 visas!")
-
-        # Add session state for question history
+        
+        # API Key Input Section
+        with st.sidebar:
+            st.markdown("### 🔑 OpenAI API Key")
+            api_key = st.text_input(
+                "Enter your OpenAI API key:",
+                type="password",
+                help="Get your API key from https://platform.openai.com/api-keys",
+                key="api_key_input"
+            )
+            
+            if api_key:
+                set_api_key(api_key)
+                st.success("✅ API key set successfully!")
+            else:
+                st.warning("⚠️ Please enter your OpenAI API key to continue")
+                return
+            
+            st.markdown("""
+            ### ℹ️ About API Keys
+            1. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
+            2. Your key is stored securely in session state
+            3. Key is never saved or logged
+            4. Session expires when you close the browser
+            
+            ### 💰 Usage
+            - OpenAI charges per API call
+            - Check [pricing](https://openai.com/pricing)
+            - Monitor usage in your OpenAI account
+            """)
+        
+        # Initialize session state
+        if "processing" not in st.session_state:
+            st.session_state.processing = False
+        if "cancel_query" not in st.session_state:
+            st.session_state.cancel_query = False
         if "question_history" not in st.session_state:
             st.session_state.question_history = []
-
-        # Question input with character limit
-        max_question_length = 500
-        question = st.text_input(
-            "Ask your F-1 visa question:",
-            max_chars=max_question_length,
-            help=f"Maximum {max_question_length} characters",
-        )
-
-        if st.button("Get Answer"):
-            if not question:
-                st.warning("Please enter a question.")
+        
+        global app
+        # Initialize app only if API key is present
+        if get_api_key():
+            config = AppConfig()
+            app = F1rstAidApp(config)
+            
+            if not app.initialize():
+                st.error("Failed to initialize application. Please check your API key.")
                 return
+                
+            st.write("Ask me anything about F-1 visas!")
+            
+            # Create two columns for input and button
+            col1, col2 = st.columns([4, 1])
+            
+            with col1:
+                # Question input with Enter key handling
+                question = st.text_input(
+                    "Ask your F-1 visa question:",
+                    max_chars=500,
+                    help="Maximum 500 characters",
+                    key="question_input",
+                    on_change=handle_enter
+                )
+            
+            with col2:
+                submit_button = st.button(
+                    "Get Answer",
+                    type="primary",
+                    use_container_width=True
+                )
 
-            with st.spinner("🔍 Researching your question..."):
-                answer = app.get_answer(question)
+            # Add cancel button in session state
+            if "processing" not in st.session_state:
+                st.session_state.processing = False
+            
+            if st.session_state.processing:
+                if st.button("⚠️ Cancel Query", type="secondary"):
+                    st.session_state.cancel_query = True
+                    st.session_state.processing = False
+                    st.rerun()
 
-                if answer and "result" in answer:
-                    st.success("✅ Answer Generated!")
-                    app.display_answer(answer)
+            if submit_button or (question and st.session_state.get('enter_pressed', False)):
+                process_query(question)
 
-                    # Update question history with timestamp
-                    st.session_state.question_history.append(
-                        {
-                            "question": question,
-                            "answer": answer["result"],
-                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        }
-                    )
-                else:
-                    st.error("❌ Failed to generate answer. Please try again.")
-
-        # Display question history with timestamps
-        if st.session_state.question_history:
-            st.markdown("### Previous Questions")
-            for item in reversed(st.session_state.question_history[-5:]):
-                with st.expander(
-                    f"Q: {item['question'][:50]}... ({item['timestamp']})"
-                ):
-                    st.markdown(item["answer"])
+            # Display question history with timestamps
+            if st.session_state.question_history:
+                st.markdown("### Previous Questions")
+                for item in reversed(st.session_state.question_history[-5:]):
+                    with st.expander(
+                        f"Q: {item['question'][:50]}... ({item['timestamp']})"
+                    ):
+                        st.markdown(item["answer"])
+            
+        else:
+            st.error("Please provide an OpenAI API key to use F1rstAid")
+            return
 
     except Exception as e:
         logging.error(f"Application error: {str(e)}")

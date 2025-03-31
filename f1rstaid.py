@@ -620,6 +620,30 @@ def main():
             st.error("Please provide an OpenAI API key to use F1rstAid")
             return
 
+        # Add styled footer
+        st.markdown("---")
+        st.markdown(
+            """
+            <div style='position: fixed; bottom: 0; width: 100%; text-align: center; 
+                        background: linear-gradient(to right, #f8f9fa, #ffffff, #f8f9fa);
+                        padding: 15px; border-top: 1px solid #eee;'>
+                <span style='font-size: 14px; color: #666;'>
+                    Built with ❤️ by 
+                    <a href='https://github.com/haramrit09k' target='_blank' 
+                        style='text-decoration: none; color: #0366d6; font-weight: 500;'>
+                        @haramrit09k
+                    </a>
+                    <span style='margin: 0 8px;'>|</span>
+                    <a href='https://linkedin.com/in/haramrit09k' target='_blank'
+                        style='text-decoration: none; color: #0077b5; font-weight: 500;'>
+                        LinkedIn
+                    </a>
+                </span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
     except Exception as e:
         logging.error(f"Application error: {str(e)}")
         st.error("An unexpected error occurred. Please try again later.")

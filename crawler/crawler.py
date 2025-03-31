@@ -22,8 +22,13 @@ logger = logging.getLogger(__name__)
 
 # List of base URLs you want to crawl.
 base_urls = [
-    "https://iso.mit.edu",  # Example site with wp-admin rules.
-    "https://www.cmu.edu/oie",  # Example site with custom disallowed paths.
+   "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers",
+   "https://studyinthestates.dhs.gov/stem-opt-hub/for-students",
+   "https://studyinthestates.dhs.gov/stem-opt-hub/for-schools",
+   "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources"
+   "https://www.uscis.gov/working-in-the-united-states/stem-employment-pathways",
+   "https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors",
+   "https://studyinthestates.dhs.gov/sevis-help-hub/student-records",
 ]
 
 # Keywords for F-1 student relevance.
@@ -36,24 +41,20 @@ f1_keywords = [
     "foreign student",
     "F-1 visa",
     "F1 visa",
-    "student visa",
-    "international tax",
-    "international tax return",
-    "social security tax",
-    "medicare tax",
-    "employment tax",
-    "tax filing",
-    "tax obligations",
-    "tax return",
-    "tax guide",
-    "taxes for students",
-    "taxes for international students",
-    "taxes for foreign students",
-    "taxes for F-1 students",
-    "taxes for F1 students",
-    "taxes for foreign scholars",
-    "taxes for foreign researchers",
-    "taxes for foreign exchange visitors",
+    "SEVP",
+    "SEVIS",
+    "STEM OPT",
+    "student",
+    "foreign exchange visitor",
+    "foreign scholar",
+    "foreign researcher",
+    "foreign academic",
+    "employment authorization document",
+    "EAD",
+    "work authorization",
+    "resident alien",
+    "non-resident alien",
+    "foreign national"
 ]
 
 # Files for output and checkpointing.
@@ -180,23 +181,36 @@ def is_relevant(content):
     """
     # Define positive keywords with weights.
     positive_keywords = {
-        "cpt": 5,
-        "opt": 5,
-        "curricular practical training": 4,
-        "optional practical training": 4,
-        "work authorization": 3,
-        "employment authorization": 3,
-        "internship": 2,
-        "practical training": 3,
+        "cpt": 50,
+        "opt": 50,
+        "curricular practical training": 40,
+        "optional practical training": 40,
+        "work authorization": 30,
+        "employment authorization": 30,
+        "internship": 20,
+        "practical training": 30,
+        "F-1 visa": 50,
+        "F1 visa": 50,
+        "student visa": 50,
+        "international student": 20,
+        "foreign student": 20,
+        "foreign exchange visitor": 20,
+        "foreign scholar": 20,
+        "foreign researcher": 20,
+        "foreign academic": 20,
+        "student": 40,
+        "SEVP": 50,
+        "SEVIS": 40,
+        "STEM OPT": 50
     }
     # Negative keywords to avoid false positives from boilerplate or generic content.
     negative_keywords = {
-        "international student": 2,
-        "immigration": 2,
-        "global affairs": 2,
-        "study abroad": 2,
-        "university homepage": 2,
-        "contact us": 2,
+        "international student": 5,
+        "global affairs": 70,
+        "study abroad": 80,
+        "university homepage": 70,
+        "contact us": 70,
+        "adoption": 100
     }
 
     text = content.lower()
@@ -211,9 +225,10 @@ def is_relevant(content):
     for keyword, weight in negative_keywords.items():
         occurrences = text.count(keyword)
         score -= weight * occurrences
-    logging.debug(f"Relevance score: {score}")
+    logging.info(f"Relevance score: {score}")
     # Define a threshold that you can adjust based on experimentation.
-    return score >= 20
+    
+    return score >= 500
 
 
 def save_checkpoint(state):

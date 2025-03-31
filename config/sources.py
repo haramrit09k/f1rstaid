@@ -22,6 +22,7 @@ WEBSITE_SOURCES = [
     # Study in the States (DHS) Sources
     "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers/employer-site-visits",
     "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources/form-i-983-overview",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources/stem-opt-frequently-asked-questions",
     "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers/employers-and-the-form-i-983",
     "https://studyinthestates.dhs.gov/sevis-help-hub/student-records",
     "https://studyinthestates.dhs.gov/stem-opt-hub/for-students/students-determining-stem-opt-extension-eligibility",
@@ -41,7 +42,13 @@ WEBSITE_SOURCES = [
     "https://studyinthestates.dhs.gov/students/prepare/paying-the-i-901-sevis-fee",
     "https://studyinthestates.dhs.gov/sevis-help-hub/student-records/fm-student-employment/f-1-optional-practical-training-opt",
     "https://studyinthestates.dhs.gov/sevis-help-hub/student-records/fm-status/f-1-cap-gap-extension",
-    ""
+    "https://studyinthestates.dhs.gov/students/complete/h-1b-status-and-the-cap-gap-extension",
+    "https://studyinthestates.dhs.gov/students/work/applying-for-practical-training",
+    "https://studyinthestates.dhs.gov/students/work/working-in-the-united-states",
+    "https://studyinthestates.dhs.gov/students/work/obtaining-a-social-security-number",
+    "https://studyinthestates.dhs.gov/students/training-opportunities-in-the-united-states",
+    "https://studyinthestates.dhs.gov/students/work/individual-taxpayer-identification-number-itin",
+    "https://studyinthestates.dhs.gov/tools-menu/frequently-asked-questions"
 
     # ICE Sources
     "https://www.ice.gov/sevis/overview",

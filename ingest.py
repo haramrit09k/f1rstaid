@@ -49,8 +49,8 @@ class ContentProcessor:
     def __init__(self):
         self.metrics = ProcessingMetrics()
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=500,
-            chunk_overlap=100,
+            chunk_size=1000,
+            chunk_overlap=200,
             length_function=len,
             separators=["\n\n", ". ", "\n", " ", ""],
         )
@@ -64,6 +64,10 @@ class ContentProcessor:
             "F Students": "F-1 Students",
             "F visa": "F-1 visa",
             "OPT ": "Optional Practical Training (OPT) ",
+            "CPT ": "Curricular Practical Training (CPT) ",
+            "STEM OPT": "STEM Optional Practical Training (OPT)",
+            "STEM OPT Extension": "STEM Optional Practical Training (OPT) Extension",
+            "STEM Extension": "STEM Optional Practical Training (OPT) Extension"
         }
         for old, new in replacements.items():
             text = text.replace(old, new)
@@ -228,8 +232,8 @@ class ContentProcessor:
                         self.metrics.total_websites += 1
 
             # Process Reddit content
-            reddit_docs = await self.scrape_reddit()
-            documents.extend(reddit_docs)
+            # reddit_docs = await self.scrape_reddit()
+            # documents.extend(reddit_docs)
 
             logging.info(f"Loaded {len(documents)} documents in total")
             logging.info(
@@ -246,18 +250,83 @@ class ContentProcessor:
 
     def create_vector_store(self, chunks: List[Document]) -> FAISS:
         """Create and validate vector store."""
-        embeddings = OpenAIEmbeddings()
-        db = FAISS.from_documents(chunks, embeddings)
+        try:
+            # Load environment variables
+            load_dotenv()
+            
+            # Check for API key
+            api_key = os.getenv('OPENAI_API_KEY')
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY not found in environment variables")
+            
+            # Initialize embeddings with API key
+            embeddings = OpenAIEmbeddings(
+                openai_api_key=api_key
+            )
+            
+            # Rerank chunks before creating vector store
+            ranked_chunks = self.rerank_documents(chunks)
+            
+            # Create vector store with ranked documents
+            db = FAISS.from_documents(ranked_chunks, embeddings)
 
-        # Validate vector store
-        test_queries = ["What is OPT?", "How to apply for OPT?"]
-        for query in test_queries:
-            results = db.similarity_search(query, k=2)
-            if not results:
-                raise ValueError(f"Vector store validation failed for: {query}")
+            # Validate vector store
+            test_queries = ["What is OPT?", "How to apply for OPT?"]
+            for query in test_queries:
+                results = db.similarity_search(query, k=2)
+                if not results:
+                    raise ValueError(f"Vector store validation failed for: {query}")
 
-        db.save_local("faiss_index")
-        return db
+            # Log reranking metrics
+            source_counts = {}
+            for chunk in ranked_chunks[:10]:  # Log top 10 documents
+                source_type = chunk.metadata.get('type', 'unknown')
+                source_counts[source_type] = source_counts.get(source_type, 0) + 1
+            
+            logging.info(f"Top 10 documents by source type: {source_counts}")
+            
+            db.save_local("faiss_index")
+            return db
+            
+        except Exception as e:
+            logging.error(f"Error creating vector store: {e}")
+            raise
+
+    def rerank_documents(self, docs: List[Document]) -> List[Document]:
+        """Rerank documents based on source type and other metrics."""
+        
+        def get_doc_score(doc: Document) -> float:
+            """Calculate document score for ranking."""
+            base_score = 1.0
+            source_type = doc.metadata.get('type', 'unknown')
+            
+            # Source type multipliers
+            source_multipliers = {
+                'pdf': 2.0,    # Official PDFs get highest priority
+                'web': 2.2,    # Official websites get medium-high priority
+                'reddit': 0.5  # Reddit sources get lower priority
+            }
+            
+            # Apply source type multiplier
+            score = base_score * source_multipliers.get(source_type, 1.0)
+            
+            # For Reddit sources, consider upvotes/score
+            if source_type == 'reddit':
+                reddit_score = doc.metadata.get('score', 0)
+                # Normalize Reddit score (0.5 to 1.0 range)
+                score_multiplier = 0.5 + min(reddit_score / 1000, 0.5)
+                score *= score_multiplier
+            
+            return score
+
+        # Sort documents by score in descending order
+        ranked_docs = sorted(
+            docs,
+            key=get_doc_score,
+            reverse=True
+        )
+        
+        return ranked_docs
 
 
 async def main():
@@ -273,13 +342,21 @@ async def main():
             if not valid_docs:
                 raise ValueError("No valid documents found")
 
-            # Create chunks
+            # Create chunks and preprocess
             chunks = []
             for doc in valid_docs:
                 doc.page_content = processor.preprocess_text(doc.page_content)
                 chunks.extend(processor.text_splitter.split_documents([doc]))
 
-            # Create vector store
+            # Log chunk statistics before reranking
+            logging.info(f"Total chunks before reranking: {len(chunks)}")
+            source_distribution = {}
+            for chunk in chunks:
+                source_type = chunk.metadata.get('type', 'unknown')
+                source_distribution[source_type] = source_distribution.get(source_type, 0) + 1
+            logging.info(f"Source distribution: {source_distribution}")
+
+            # Create vector store with reranked chunks
             db = processor.create_vector_store(chunks)
             logging.info("Processing completed successfully")
             return True

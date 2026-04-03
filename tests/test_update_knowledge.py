@@ -1,4 +1,5 @@
 import pytest
+from ingest import ContentProcessor
 from update_knowledge import append_to_vector_store
 
 def test_vector_store_update(mock_documents):

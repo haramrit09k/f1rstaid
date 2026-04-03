@@ -48,7 +48,7 @@ WEBSITE_SOURCES = [
     "https://studyinthestates.dhs.gov/students/work/obtaining-a-social-security-number",
     "https://studyinthestates.dhs.gov/students/training-opportunities-in-the-united-states",
     "https://studyinthestates.dhs.gov/students/work/individual-taxpayer-identification-number-itin",
-    "https://studyinthestates.dhs.gov/tools-menu/frequently-asked-questions"
+    "https://studyinthestates.dhs.gov/tools-menu/frequently-asked-questions",
 
     # ICE Sources
     "https://www.ice.gov/sevis/overview",

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from typing import List
@@ -6,7 +7,7 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
-from ingest import ContentProcessor, scrape_reddit
+from ingest import ContentProcessor
 
 # Configure logging
 logging.basicConfig(
@@ -36,14 +37,14 @@ def append_to_vector_store(docs: List[Document]) -> bool:
         return False
 
 
-def update_knowledge_base() -> bool:
+async def update_knowledge_base() -> bool:
     """Update the knowledge base with new content."""
     try:
         # Initialize processor
         processor = ContentProcessor()
 
         # Scrape new Reddit content
-        reddit_docs = scrape_reddit()
+        reddit_docs = await processor.scrape_reddit()
         if not reddit_docs:
             logging.warning("No new Reddit content found")
             return False
@@ -80,7 +81,7 @@ if __name__ == "__main__":
         f"\n🔄 Starting knowledge base update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
-    if update_knowledge_base():
+    if asyncio.run(update_knowledge_base()):
         print("\n✅ Knowledge base update complete!")
         print(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     else:

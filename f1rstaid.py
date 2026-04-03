@@ -115,7 +115,7 @@ class F1rstAidApp:
                     temperature=self.config.temperature,
                 ),
                 retriever=retriever,
-                chain_type="map_reduce",
+                chain_type="stuff",
                 return_source_documents=True,
             )
 

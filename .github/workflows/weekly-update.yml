@@ -1,0 +1,86 @@
+name: Weekly Knowledge Base Update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 6am UTC
+  workflow_dispatch:       # Allow manual trigger from GitHub UI
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run knowledge base update (Reddit + web + RSS)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
+          REDDIT_CLIENT_SECRET: ${{ secrets.REDDIT_CLIENT_SECRET }}
+          REDDIT_USER_AGENT: ${{ secrets.REDDIT_USER_AGENT }}
+        run: python update_knowledge.py
+
+      - name: Run autonomous URL discovery crawler
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python -m crawler.crawler
+
+      - name: Ingest newly discovered URLs
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python - <<'EOF'
+          import asyncio
+          import aiohttp
+          from ingest import ContentProcessor
+          from update_knowledge import append_to_vector_store
+
+          async def ingest_discovered():
+              try:
+                  with open("relevant_urls.txt") as f:
+                      urls = [u.strip() for u in f if u.strip()]
+              except FileNotFoundError:
+                  print("No relevant_urls.txt found — skipping discovered URL ingestion")
+                  return
+
+              processor = ContentProcessor()
+              docs = []
+              # Process the last 50 discovered URLs to avoid runaway ingestion
+              async with aiohttp.ClientSession():
+                  for url in urls[-50:]:
+                      doc = await processor.process_website(url)
+                      if doc and processor.validate_content(doc):
+                          doc.page_content = processor.preprocess_text(doc.page_content)
+                          docs.append(doc)
+
+              if not docs:
+                  print("No new discovered content to ingest")
+                  return
+
+              chunks = []
+              for doc in docs:
+                  chunks.extend(processor.text_splitter.split_documents([doc]))
+
+              if append_to_vector_store(chunks):
+                  print(f"Ingested {len(chunks)} chunks from discovered URLs")
+
+          asyncio.run(ingest_discovered())
+          EOF
+
+      - name: Commit updated FAISS index
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add faiss_index/
+          git diff --staged --quiet || git commit -m "chore: weekly knowledge base update [skip ci]"
+          git push

@@ -22,13 +22,18 @@ logger = logging.getLogger(__name__)
 
 # List of base URLs you want to crawl.
 base_urls = [
-   "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers",
-   "https://studyinthestates.dhs.gov/stem-opt-hub/for-students",
-   "https://studyinthestates.dhs.gov/stem-opt-hub/for-schools",
-   "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources"
-   "https://www.uscis.gov/working-in-the-united-states/stem-employment-pathways",
-   "https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors",
-   "https://studyinthestates.dhs.gov/sevis-help-hub/student-records",
+    # Government sources
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-students",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-schools",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources",
+    "https://www.uscis.gov/working-in-the-united-states/stem-employment-pathways",
+    "https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors",
+    "https://studyinthestates.dhs.gov/sevis-help-hub/student-records",
+    # Trusted immigration law firm domains (autonomous discovery)
+    "https://www.murthy.com/immigration/",
+    "https://www.fragomen.com/insights/",
+    "https://www.aila.org/blog/",
 ]
 
 # Keywords for F-1 student relevance.

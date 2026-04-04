@@ -1,3 +1,4 @@
+import asyncio
 import os
 import logging
 import sys
@@ -6,6 +7,7 @@ from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
+import aiohttp
 import requests
 from bs4 import BeautifulSoup
 import html2text
@@ -367,9 +369,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    import asyncio
-    import aiohttp
-
     # On MacOS, use a different event loop policy
     if sys.platform == "darwin":
         asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())

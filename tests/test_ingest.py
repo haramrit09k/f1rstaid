@@ -1,4 +1,5 @@
 import pytest
+from langchain_core.documents import Document
 from ingest import ContentProcessor
 
 def test_content_validation(mock_documents):

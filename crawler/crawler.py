@@ -22,13 +22,18 @@ logger = logging.getLogger(__name__)
 
 # List of base URLs you want to crawl.
 base_urls = [
-   "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers",
-   "https://studyinthestates.dhs.gov/stem-opt-hub/for-students",
-   "https://studyinthestates.dhs.gov/stem-opt-hub/for-schools",
-   "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources"
-   "https://www.uscis.gov/working-in-the-united-states/stem-employment-pathways",
-   "https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors",
-   "https://studyinthestates.dhs.gov/sevis-help-hub/student-records",
+    # Government sources
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-employers",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-students",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-schools",
+    "https://studyinthestates.dhs.gov/stem-opt-hub/additional-resources",
+    "https://www.uscis.gov/working-in-the-united-states/stem-employment-pathways",
+    "https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors",
+    "https://studyinthestates.dhs.gov/sevis-help-hub/student-records",
+    # Trusted immigration law firm domains (autonomous discovery)
+    "https://www.murthy.com/immigration/",
+    "https://www.fragomen.com/insights/",
+    "https://www.aila.org/blog/",
 ]
 
 # Keywords for F-1 student relevance.
@@ -257,155 +262,156 @@ def load_checkpoint():
         return None
 
 
-# ---------------------------
-# STEP 1: Build Robots.txt Mapping for All Base URLs
-# ---------------------------
-robots_mapping = {}
+if __name__ == "__main__":
+    # ---------------------------
+    # STEP 1: Build Robots.txt Mapping for All Base URLs
+    # ---------------------------
+    robots_mapping = {}
 
-for base_url in base_urls:
-    robots_txt = get_robots_txt(base_url)
-    robots_mapping[base_url] = robots_txt
-
-with open(ROBOTS_MAPPING_FILE, "w") as f:
-    json.dump(robots_mapping, f, indent=2)
-logger.info(f"Saved robots.txt mapping to {ROBOTS_MAPPING_FILE}")
-
-# ---------------------------
-# STEP 2: Crawl Websites and Filter for F-1 Relevant URLs with Checkpointing
-# ---------------------------
-
-# Overall state structure
-state = {"visited": {}, "to_visit": {}, "relevant_urls": {}}
-
-# For each base URL, we'll store separate lists in our state.
-for base_url in base_urls:
-    state["visited"][base_url] = []
-    state["to_visit"][base_url] = [base_url]
-    state["relevant_urls"][base_url] = []
-
-# If RESUME is True and a checkpoint exists, load it.
-if RESUME and os.path.exists(CHECKPOINT_FILE):
-    loaded_state = load_checkpoint()
-    if loaded_state:
-        state = loaded_state
-
-# Process each website separately.
-try:
     for base_url in base_urls:
-        logger.info(f"Starting crawl for {base_url}")
-        domain = urlparse(base_url).netloc
+        robots_txt = get_robots_txt(base_url)
+        robots_mapping[base_url] = robots_txt
 
-        # Create a persistent session with retries
-        session = requests.Session()
-        retries = Retry(
-            total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]
-        )
-        session.mount("https://", HTTPAdapter(max_retries=retries))
+    with open(ROBOTS_MAPPING_FILE, "w") as f:
+        json.dump(robots_mapping, f, indent=2)
+    logger.info(f"Saved robots.txt mapping to {ROBOTS_MAPPING_FILE}")
 
-        # Parse robots.txt for this site
-        disallowed, allowed = parse_robots_txt(robots_mapping.get(base_url, ""))
-        logger.info(
-            f"For {base_url}: Disallowed paths: {disallowed} | Allowed paths: {allowed}"
-        )
+    # ---------------------------
+    # STEP 2: Crawl Websites and Filter for F-1 Relevant URLs with Checkpointing
+    # ---------------------------
 
-        # Load state for this base_url if available
-        visited = set(state["visited"].get(base_url, []))
-        to_visit = state["to_visit"].get(base_url, [base_url])
-        relevant_urls = set(state["relevant_urls"].get(base_url, []))
-        batch_counter = 0  # Counter to trigger batch saving
+    # Overall state structure
+    state = {"visited": {}, "to_visit": {}, "relevant_urls": {}}
 
-        while to_visit:
-            url = to_visit.pop(0)
-            if url in visited:
-                logger.debug(f"Already visited {url}, skipping.")
-                continue
-            if not is_allowed(url, disallowed, allowed):
-                logger.info(f"Skipping disallowed URL: {url}")
-                continue
+    # For each base URL, we'll store separate lists in our state.
+    for base_url in base_urls:
+        state["visited"][base_url] = []
+        state["to_visit"][base_url] = [base_url]
+        state["relevant_urls"][base_url] = []
 
-            visited.add(url)
-            try:
-                response = session.get(
-                    url,
-                    timeout=15,
-                    proxies={"http": None, "https": None},  # Explicitly disable proxies
-                    headers={
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                        "Accept-Language": "en-US,en;q=0.9",
-                    },
-                )
-                # PythonAnywhere whitelist check
-                if "pythonanywhere" in response.text.lower():
-                    logger.error("Blocked by PythonAnywhere's whitelist")
-                    raise Exception("Domain not whitelisted on PythonAnywhere")
+    # If RESUME is True and a checkpoint exists, load it.
+    if RESUME and os.path.exists(CHECKPOINT_FILE):
+        loaded_state = load_checkpoint()
+        if loaded_state:
+            state = loaded_state
 
-                if response.status_code != 200:
-                    logger.warning(
-                        f"Non-200 status code {response.status_code} for {url}"
-                    )
+    # Process each website separately.
+    try:
+        for base_url in base_urls:
+            logger.info(f"Starting crawl for {base_url}")
+            domain = urlparse(base_url).netloc
+
+            # Create a persistent session with retries
+            session = requests.Session()
+            retries = Retry(
+                total=3, backoff_factor=0.5, status_forcelist=[500, 502, 503, 504]
+            )
+            session.mount("https://", HTTPAdapter(max_retries=retries))
+
+            # Parse robots.txt for this site
+            disallowed, allowed = parse_robots_txt(robots_mapping.get(base_url, ""))
+            logger.info(
+                f"For {base_url}: Disallowed paths: {disallowed} | Allowed paths: {allowed}"
+            )
+
+            # Load state for this base_url if available
+            visited = set(state["visited"].get(base_url, []))
+            to_visit = state["to_visit"].get(base_url, [base_url])
+            relevant_urls = set(state["relevant_urls"].get(base_url, []))
+            batch_counter = 0  # Counter to trigger batch saving
+
+            while to_visit:
+                url = to_visit.pop(0)
+                if url in visited:
+                    logger.debug(f"Already visited {url}, skipping.")
                     continue
-            except Exception as e:
-                logger.error(f"Error accessing {url}: {e}")
-                time.sleep(5)  # Add delay between retries
-                continue
+                if not is_allowed(url, disallowed, allowed):
+                    logger.info(f"Skipping disallowed URL: {url}")
+                    continue
 
-            page_text = response.text
-            soup = BeautifulSoup(page_text, "html.parser")
-            # Extract the main content to avoid boilerplate text.
-            main_content = extract_main_content(soup)
-            if is_relevant(main_content):
-                logger.info(f"Relevant page found: {url}")
-                if url not in relevant_urls:
-                    relevant_urls.add(url)
-                    batch_counter += 1
+                visited.add(url)
+                try:
+                    response = session.get(
+                        url,
+                        timeout=15,
+                        proxies={"http": None, "https": None},  # Explicitly disable proxies
+                        headers={
+                            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                            "Accept-Language": "en-US,en;q=0.9",
+                        },
+                    )
+                    # PythonAnywhere whitelist check
+                    if "pythonanywhere" in response.text.lower():
+                        logger.error("Blocked by PythonAnywhere's whitelist")
+                        raise Exception("Domain not whitelisted on PythonAnywhere")
 
-            soup = BeautifulSoup(page_text, "html.parser")
-            for a_tag in soup.find_all("a", href=True):
-                link = urljoin(url, a_tag["href"])
-                parsed_link = urlparse(link)
-                # Follow only valid HTTP links within the same domain.
-                if (
-                    parsed_link.scheme in ("http", "https")
-                    and domain in parsed_link.netloc
-                ):
-                    if not is_allowed(link, disallowed, allowed):
-                        logger.debug(f"Link {link} on {url} is disallowed, skipping.")
+                    if response.status_code != 200:
+                        logger.warning(
+                            f"Non-200 status code {response.status_code} for {url}"
+                        )
                         continue
-                    if link not in visited:
-                        to_visit.append(link)
+                except Exception as e:
+                    logger.error(f"Error accessing {url}: {e}")
+                    time.sleep(5)  # Add delay between retries
+                    continue
 
-            # Update state for this base_url.
+                page_text = response.text
+                soup = BeautifulSoup(page_text, "html.parser")
+                # Extract the main content to avoid boilerplate text.
+                main_content = extract_main_content(soup)
+                if is_relevant(main_content):
+                    logger.info(f"Relevant page found: {url}")
+                    if url not in relevant_urls:
+                        relevant_urls.add(url)
+                        batch_counter += 1
+
+                soup = BeautifulSoup(page_text, "html.parser")
+                for a_tag in soup.find_all("a", href=True):
+                    link = urljoin(url, a_tag["href"])
+                    parsed_link = urlparse(link)
+                    # Follow only valid HTTP links within the same domain.
+                    if (
+                        parsed_link.scheme in ("http", "https")
+                        and domain in parsed_link.netloc
+                    ):
+                        if not is_allowed(link, disallowed, allowed):
+                            logger.debug(f"Link {link} on {url} is disallowed, skipping.")
+                            continue
+                        if link not in visited:
+                            to_visit.append(link)
+
+                # Update state for this base_url.
+                state["visited"][base_url] = list(visited)
+                state["to_visit"][base_url] = to_visit
+                state["relevant_urls"][base_url] = list(relevant_urls)
+
+                # Save checkpoint every 10 new relevant URLs.
+                if batch_counter >= 10:
+                    save_checkpoint(state)
+                    batch_counter = 0
+
+            logger.info(
+                f"Finished crawling {base_url}. Visited {len(visited)} pages; found {len(relevant_urls)} relevant pages."
+            )
+            # Update state in case we finished this base_url.
             state["visited"][base_url] = list(visited)
             state["to_visit"][base_url] = to_visit
             state["relevant_urls"][base_url] = list(relevant_urls)
+            save_checkpoint(state)
 
-            # Save checkpoint every 10 new relevant URLs.
-            if batch_counter >= 10:
-                save_checkpoint(state)
-                batch_counter = 0
-
-        logger.info(
-            f"Finished crawling {base_url}. Visited {len(visited)} pages; found {len(relevant_urls)} relevant pages."
-        )
-        # Update state in case we finished this base_url.
-        state["visited"][base_url] = list(visited)
-        state["to_visit"][base_url] = to_visit
-        state["relevant_urls"][base_url] = list(relevant_urls)
+    except KeyboardInterrupt:
+        logger.info("Pause requested by user. Saving current state...")
         save_checkpoint(state)
+        logger.info("Exiting gracefully due to KeyboardInterrupt.")
 
-except KeyboardInterrupt:
-    logger.info("Pause requested by user. Saving current state...")
-    save_checkpoint(state)
-    logger.info("Exiting gracefully due to KeyboardInterrupt.")
+    # ---------------------------
+    # STEP 3: Save Relevant URLs to a Final File for ML Ingestion
+    # ---------------------------
+    all_relevant = []
+    for base_url in base_urls:
+        all_relevant.extend(state["relevant_urls"].get(base_url, []))
 
-# ---------------------------
-# STEP 3: Save Relevant URLs to a Final File for ML Ingestion
-# ---------------------------
-all_relevant = []
-for base_url in base_urls:
-    all_relevant.extend(state["relevant_urls"].get(base_url, []))
-
-with open(RELEVANT_URLS_FILE, "w") as f:
-    for url in all_relevant:
-        f.write(url + "\n")
-logger.info(f"Saved total of {len(all_relevant)} relevant URLs to {RELEVANT_URLS_FILE}")
+    with open(RELEVANT_URLS_FILE, "w") as f:
+        for url in all_relevant:
+            f.write(url + "\n")
+    logger.info(f"Saved total of {len(all_relevant)} relevant URLs to {RELEVANT_URLS_FILE}")

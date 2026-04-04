@@ -48,7 +48,7 @@ WEBSITE_SOURCES = [
     "https://studyinthestates.dhs.gov/students/work/obtaining-a-social-security-number",
     "https://studyinthestates.dhs.gov/students/training-opportunities-in-the-united-states",
     "https://studyinthestates.dhs.gov/students/work/individual-taxpayer-identification-number-itin",
-    "https://studyinthestates.dhs.gov/tools-menu/frequently-asked-questions"
+    "https://studyinthestates.dhs.gov/tools-menu/frequently-asked-questions",
 
     # ICE Sources
     "https://www.ice.gov/sevis/overview",
@@ -66,4 +66,27 @@ WEBSITE_SOURCES = [
     "https://blog.sprintax.com/f1-visa-tax-return-guide-international-students/",
     "https://cptdog.com/blogs/day-1-cpt-risks",
     "https://stilt.com/education/day-one-cpt-second-masters-no-h1b-us/",
+
+    # USCIS News & Policy Updates (high-churn)
+    "https://www.uscis.gov/newsroom",
+    "https://www.uscis.gov/newsroom/alerts",
+    "https://www.uscis.gov/policy-manual/updates",
+
+    # DHS Study in the States — What's New
+    "https://studyinthestates.dhs.gov/whats-new",
+
+    # Immigration Law Firm Blogs (public, no login required)
+    "https://www.murthy.com/view-all-news/",
+    "https://www.fragomen.com/insights/index.html",
+    "https://www.mcenteelaw.com/blog/us-immigration-guide-international-students-f1-opt-cpt",
+    "https://www.alcorn.law/stem-opt-extension/",
+
+    # AILA (American Immigration Lawyers Association) — public content
+    "https://www.aila.org/blog/",
+    "https://www.aila.org/library/uscis-extension-of-opt-and-f-1-h-1b-cap-gap",
+    "https://www.aila.org/library/cis-ombudsman-tip-sheet-how-f-1-students-seeking",
+
+    # NAFSA (Association of International Educators) — free public resources
+    "https://www.nafsa.org/professional-resources/browse-by-interest/preparing-f-1-visa-interview",
+    "https://www.nafsa.org/professional-resources/learning-and-training/us-visa-and-entry-process-students-and-scholars",
 ]

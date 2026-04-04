@@ -11,7 +11,7 @@ import os.path
 import streamlit as st
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.chains import RetrievalQA, LLMChain
+from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
@@ -24,6 +24,51 @@ logging.basicConfig(
     handlers=[logging.FileHandler("f1rstaid.log"), logging.StreamHandler()],
 )
 
+_F1_KEYWORDS = {
+    # Visa & status
+    "f-1", "f1", "visa", "sevis", "sevp", "i-20", "i20", "status", "grace period",
+    "cap gap", "out of status", "full-time", "enrollment", "dso",
+    "designated school official",
+    # Work authorization
+    "opt", "cpt", "ead", "employment authorization", "work authorization",
+    "optional practical training", "curricular practical training",
+    "stem opt", "stem extension", "i-765", "i-983",
+    # Agencies & forms
+    "uscis", "dhs", "ice", "cbp", "i-94", "i-539", "sevis fee", "i-901",
+    # Processes
+    "transfer", "school transfer", "change of status", "reinstatement",
+    "travel", "reentry", "re-entry", "port of entry", "travel signature",
+    # Tax & finance
+    "tax", "itin", "w-2", "1042-s", "social security", "ssn", "fica",
+    # Employment
+    "internship", "employer", "h-1b", "h1b", "sponsor", "lottery",
+    "off-campus", "on-campus",
+}
+
+QA_PROMPT = PromptTemplate(
+    input_variables=["context", "question"],
+    template=(
+        "You are F1rstAid, an expert assistant specializing in F-1 student visa "
+        "regulations in the United States. You help international students understand "
+        "USCIS, DHS, and related immigration requirements.\n\n"
+        "Use ONLY the following context to answer the question. If the context does not "
+        "contain enough information to answer confidently, say exactly: \"I don't have "
+        "enough information to answer this accurately — please consult your DSO or visit "
+        "uscis.gov directly.\"\n\n"
+        "Guidelines:\n"
+        "- Reference the source when possible (e.g., \"Per USCIS...\", \"According to "
+        "DHS Study in the States...\")\n"
+        "- Be specific about form numbers, timelines, and eligibility requirements when "
+        "the context supports it\n"
+        "- Never guess or extrapolate beyond what the context explicitly states\n"
+        "- Immigration regulations change frequently — always recommend verifying with a "
+        "DSO or USCIS\n\n"
+        "Context:\n{context}\n\n"
+        "Question: {question}\n\n"
+        "Answer:"
+    ),
+)
+
 
 @dataclass
 class AppConfig:
@@ -31,8 +76,8 @@ class AppConfig:
 
     model_name: str = "gpt-3.5-turbo"
     vector_store_path: str = "faiss_index"
-    search_k: int = 5
-    temperature: float = 0.7
+    search_k: int = 3
+    temperature: float = 0.2
     GENERIC_HELP_QUESTIONS = {
         "help": {
             "response": """
@@ -115,8 +160,9 @@ class F1rstAidApp:
                     temperature=self.config.temperature,
                 ),
                 retriever=retriever,
-                chain_type="map_reduce",
+                chain_type="stuff",
                 return_source_documents=True,
+                chain_type_kwargs={"prompt": QA_PROMPT},
             )
 
             logging.info("Application initialized successfully")
@@ -168,7 +214,7 @@ class F1rstAidApp:
         return True
 
     def _is_relevant_question(self, question: str) -> Tuple[bool, str]:
-        """Check relevance with layered analysis."""
+        """Check relevance using fast keyword matching (no API call)."""
         clean_q = question.strip().lower()
 
         # First check for predefined help questions
@@ -176,32 +222,14 @@ class F1rstAidApp:
             if any(trigger in clean_q for trigger in entry["triggers"]):
                 return True, "Help question detected"
 
-        # LLM-based relevance check for other questions
-        relevance_prompt = PromptTemplate.from_template(
-            """Analyze if this question relates to F-1 visas, OPT, CPT, or related topics.
-            Respond EXACTLY in this format:
-            Relevance: [yes/no]
-            Reason: [1-2 sentence explanation]
-            Guidance: [Specific improvement suggestions if irrelevant]
+        if any(kw in clean_q for kw in _F1_KEYWORDS):
+            return True, "F-1 topic detected"
 
-            Question: {question}"""
+        return False, (
+            "This doesn't appear to be an F-1 visa question. "
+            "I can help with OPT/CPT eligibility, SEVIS, employment authorization, "
+            "maintaining F-1 status, travel requirements, and related topics."
         )
-
-        try:
-            llm = ChatOpenAI(temperature=0.3, max_tokens=1000)
-            chain = LLMChain(llm=llm, prompt=relevance_prompt)
-            response = chain.invoke({"question": question})["text"]
-
-            # Parse structured response
-            relevance = "relevance: yes" in response.lower()
-            reason = self._parse_response_section(response, "Reason:")
-            guidance = self._parse_response_section(response, "Guidance:")
-
-            return relevance, f"{reason} {guidance}"
-
-        except Exception as e:
-            logging.error(f"Relevance check failed: {str(e)}")
-            return False, "Error analyzing question. Please try again."
 
     @staticmethod
     def _parse_response_section(response: str, header: str) -> str:
@@ -250,6 +278,10 @@ class F1rstAidApp:
                 {"query": question, "return_only_outputs": True}
             )
             logging.info(f"Answer generated: {answer}")
+            if answer and "source_documents" in answer:
+                answer["source_documents"] = self._sort_by_source_priority(
+                    answer["source_documents"]
+                )
             return answer
 
         except Exception as e:
@@ -406,6 +438,12 @@ class F1rstAidApp:
         )  # Clean CSS to avoid markdown issues, especially """ blocks
         return clean_css + "\n\n\n\n".join(sources)
 
+    @staticmethod
+    def _sort_by_source_priority(docs: List[Document]) -> List[Document]:
+        """Re-sort retrieved docs so official sources appear before Reddit."""
+        priority = {"pdf": 0, "web": 1, "reddit": 2}
+        return sorted(docs, key=lambda d: priority.get(d.metadata.get("type", "unknown"), 3))
+
     def format_answer(self, result: str, sources: List[Document]) -> str:
         """Format answer with source context."""
         has_reddit_sources = any(
@@ -518,6 +556,16 @@ def set_api_key(api_key: str) -> None:
     os.environ["OPENAI_API_KEY"] = api_key
 
 
+@st.cache_resource
+def get_cached_app(api_key: str) -> Optional[F1rstAidApp]:
+    """Initialize and cache the app — runs once per unique API key per session."""
+    config = AppConfig()
+    app = F1rstAidApp(config)
+    if not app.initialize():
+        return None
+    return app
+
+
 def main():
     """Main application entry point."""
     try:
@@ -562,13 +610,10 @@ def main():
         if "question_history" not in st.session_state:
             st.session_state.question_history = []
         
-        global app
         # Initialize app only if API key is present
         if get_api_key():
-            config = AppConfig()
-            app = F1rstAidApp(config)
-            
-            if not app.initialize():
+            app = get_cached_app(get_api_key())
+            if app is None:
                 st.error("Failed to initialize application. Please check your API key.")
                 return
                 

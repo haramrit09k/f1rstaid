@@ -164,16 +164,20 @@ async def update_from_rss() -> bool:
         return False
 
 
+async def _run_all_updates() -> list:
+    return list(await asyncio.gather(
+        update_knowledge_base(),  # Reddit
+        update_web_sources(),     # USCIS/DHS/law firm pages
+        update_from_rss(),        # RSS feeds (USCIS alerts, NAFSA)
+    ))
+
+
 if __name__ == "__main__":
     print(
         f"\n🔄 Starting knowledge base update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
 
-    results = asyncio.run(asyncio.gather(
-        update_knowledge_base(),  # Reddit
-        update_web_sources(),     # USCIS/DHS/law firm pages
-        update_from_rss(),        # RSS feeds (USCIS alerts, NAFSA)
-    ))
+    results = asyncio.run(_run_all_updates())
 
     if any(results):
         print("\n✅ Knowledge base update complete!")

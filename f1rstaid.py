@@ -4,7 +4,6 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from datetime import datetime
 from urllib.parse import urlparse
 import os.path
 
@@ -79,6 +78,27 @@ QA_PROMPT = PromptTemplate(
         "Context:\n{context}\n\n"
         "Question: {question}\n\n"
         "Answer:"
+    ),
+)
+
+# Bounds the condense_question() LLM call to the last few exchanges rather
+# than the whole conversation -- keeps that extra call's cost/latency flat
+# regardless of how long a session gets, and a follow-up almost never
+# depends on anything more than a couple of turns back.
+CONDENSE_HISTORY_TURNS = 6  # 3 user/assistant exchanges
+
+CONDENSE_PROMPT = PromptTemplate(
+    input_variables=["chat_history", "question"],
+    template=(
+        "Given the conversation so far and a follow-up question, rewrite "
+        "the follow-up as a standalone question that includes every fact "
+        "from the conversation needed to answer it on its own -- dates, "
+        "day counts, which OPT phase, or anything else the student already "
+        "stated. Do not answer the question yourself. If the follow-up is "
+        "already standalone, return it unchanged.\n\n"
+        "Conversation so far:\n{chat_history}\n\n"
+        "Follow-up question: {question}\n\n"
+        "Standalone question:"
     ),
 )
 
@@ -517,8 +537,48 @@ class F1rstAidApp:
         except (IndexError, AttributeError):
             return "Unable to parse response."
 
-    def get_answer(self, question: str) -> Optional[Dict]:
-        """Process question with layered relevance handling."""
+    def condense_question(self, question: str, chat_history: List[Dict]) -> str:
+        """Rewrites a follow-up question into a standalone one using recent
+        chat history, so get_answer()'s existing single-turn pipeline
+        (help matching, rules_engine dispatch, relevance check, RAG
+        retrieval) stays completely unchanged downstream -- it only ever
+        sees a self-contained question and never has to reason about
+        history itself. This is what turns "what about STEM OPT?" into
+        something rules_engine or the retriever can actually act on.
+
+        Falls back to the original question on any failure (a bad rewrite,
+        or the LLM call itself failing) -- condensation is an enhancement,
+        never something that should be the reason a question goes
+        unanswered.
+        """
+        if not chat_history:
+            return question
+
+        recent = chat_history[-CONDENSE_HISTORY_TURNS:]
+        history_text = "\n".join(
+            f"{'Student' if m.get('role') == 'user' else 'F1rstAid'}: {m.get('content', '')}"
+            for m in recent
+        )
+
+        try:
+            rewritten = self.llm.invoke(
+                CONDENSE_PROMPT.format(chat_history=history_text, question=question)
+            ).content.strip()
+            logging.info(f"Condensed follow-up: {question!r} -> {rewritten!r}")
+            return rewritten or question
+        except Exception as e:
+            logging.error(f"Question condensation failed, using original question: {e}")
+            return question
+
+    def get_answer(self, question: str, chat_history: Optional[List[Dict]] = None) -> Optional[Dict]:
+        """Process question with layered relevance handling.
+
+        chat_history, if given, is a list of prior {"role", "content"}
+        turns -- used only to rewrite `question` into a standalone version
+        via condense_question() before any of the real routing happens.
+        Optional and defaults to None so existing single-turn callers (the
+        eval harness, tests) see no change in behavior at all.
+        """
         try:
             # Handle empty questions
             if not question.strip():
@@ -527,17 +587,27 @@ class F1rstAidApp:
                     "source_documents": [],
                 }
 
-            # Check for predefined help questions
+            # Check for predefined help questions -- checked against the
+            # raw question, before condensing, so a mid-conversation "help"
+            # still matches its trigger phrase directly rather than risking
+            # the condense step paraphrasing it into something that doesn't.
             clean_q = question.strip().lower()
             for key, entry in self.config.GENERIC_HELP_QUESTIONS.items():
                 if any(trigger in clean_q for trigger in entry["triggers"]):
                     logging.info(f"Help question detected: {key}")
                     return {"result": entry["response"], "source_documents": []}
 
+            if chat_history:
+                question = self.condense_question(question, chat_history)
+
             # Deterministic rules (day-count/logic questions with exact
             # answers) -- bypasses RAG entirely for questions they match.
             # Returns None for anything that isn't a match, falling through
-            # to the normal RAG path unchanged.
+            # to the normal RAG path unchanged. Runs on the (possibly
+            # condensed) question, so a clarifying question rules_engine
+            # asked last turn -- e.g. "are you on initial OPT or STEM
+            # extension?" -- can actually be answered in the next turn
+            # instead of being a dead end.
             rule_answer = rules_engine.match_and_answer(question, self.llm)
             if rule_answer is not None:
                 return rule_answer
@@ -794,77 +864,6 @@ class F1rstAidApp:
                 )
 
 
-def handle_enter():
-    """Handle Enter key press in the question input.
-
-    This is an on_change callback -- Streamlit runs callbacks in a separate
-    pre-render pass *before* the main script body executes, so any st.*
-    rendering calls made from here (which process_query() does: spinner,
-    success message, display_answer()) land outside the normal script
-    layout, often rendering at the top of the page instead of where the
-    input box actually is. Reported live: this only happened on Enter-key
-    submission, never on the "Get Answer" button click -- exactly the
-    signature of this bug, since the button's process_query() call runs
-    from the main script body in the right place, not from a callback.
-
-    Fixed by having the callback only flip a flag; main()'s normal script
-    flow (right after the input/button section, same place the button
-    branch already renders from) is what actually calls process_query().
-    """
-    if (
-        "question_input" in st.session_state
-        and st.session_state.question_input
-        and not st.session_state.processing
-    ):
-        st.session_state["_enter_submitted"] = True
-
-
-def process_query(question: str):
-    """Process the user query."""
-    try:
-        if not question:
-            st.warning("Please enter a question.")
-            return
-
-        # get_cached_app() is @st.cache_resource-keyed by API key, so this
-        # returns the same already-initialized instance main() built --
-        # cheap, not a re-init. Fetched here rather than relying on main()'s
-        # local `app` variable being visible as a global: it never was (no
-        # `global app` declaration), so every call to process_query() was
-        # hitting a real NameError on `app`, caught by the except below and
-        # shown to the user as a generic "error occurred" -- i.e. the
-        # submit button has never actually worked. Fixed by not depending
-        # on implicit global state here at all.
-        app = get_cached_app(get_api_key())
-        if app is None:
-            st.error("Application isn't initialized. Please check your API key.")
-            return
-
-        st.session_state.processing = True
-
-        with st.spinner("🔍 Researching your question..."):
-            answer = app.get_answer(question)
-
-            if answer and "result" in answer:
-                st.success("✅ Answer Generated!")
-                app.display_answer(answer)
-
-                # Update question history with timestamp
-                st.session_state.question_history.append({
-                    "question": question,
-                    "answer": answer["result"],
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                })
-            else:
-                st.error("❌ Failed to generate answer. Please try again.")
-
-    except Exception as e:
-        logging.error(f"Query processing error: {str(e)}")
-        st.error("An error occurred while processing your query.")
-    finally:
-        st.session_state.processing = False
-
-
 def get_api_key() -> Optional[str]:
     """Get API key from session state or environment."""
     if "OPENAI_API_KEY" in st.session_state:
@@ -946,91 +945,81 @@ qualified immigration attorney before acting on it.
             2. Your key is stored securely in session state
             3. Key is never saved or logged
             4. Session expires when you close the browser
-            
+
             ### 💰 Usage
             - OpenAI charges per API call
             - Check [pricing](https://openai.com/pricing)
             - Monitor usage in your OpenAI account
             """)
-        
+
+            if st.session_state.get("messages"):
+                st.markdown("---")
+                if st.button("🔄 New conversation", use_container_width=True):
+                    st.session_state.messages = []
+                    st.rerun()
+
         # Initialize session state
-        if "processing" not in st.session_state:
-            st.session_state.processing = False
-        if "question_history" not in st.session_state:
-            st.session_state.question_history = []
-        
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
         # Initialize app only if API key is present
         if get_api_key():
             app = get_cached_app(get_api_key())
             if app is None:
                 st.error("Failed to initialize application. Please check your API key.")
                 return
-                
-            st.write("Ask me anything about F-1 visas!")
 
             # Clickable example questions -- there's no other onboarding
             # here, so a first-time visitor otherwise faces a blank input.
-            # Clicking one just fills the question box (via session_state,
-            # set below before the text_input widget is created); it does
-            # not auto-submit, so no API call happens until the user
-            # confirms with "Get Answer".
-            if not st.session_state.processing:
+            # Only shown before the conversation starts, matching how
+            # suggested-prompt chips normally behave in a chat UI. Clicking
+            # one sends it immediately (chat UI convention), rather than
+            # pre-filling an input box -- st.chat_input doesn't support a
+            # prefillable value the way the old st.text_input did.
+            if not st.session_state.messages:
+                st.write("Ask me anything about F-1 visas!")
                 st.caption("Not sure where to start? Try one of these:")
                 chip_cols = st.columns(len(EXAMPLE_QUESTIONS))
                 for i, example in enumerate(EXAMPLE_QUESTIONS):
                     with chip_cols[i]:
                         if st.button(example, key=f"example_{i}", use_container_width=True):
-                            st.session_state["_pending_example"] = example
+                            st.session_state["_pending_prompt"] = example
                             st.rerun()
 
-            if "_pending_example" in st.session_state:
-                st.session_state["question_input"] = st.session_state.pop("_pending_example")
+            # Replay the conversation so far. Each assistant turn stores its
+            # full raw answer dict (not just the text), so display_answer()
+            # can fully re-render the badge/citation/source-card presentation
+            # identically to how it looked the first time, on every rerun.
+            for msg in st.session_state.messages:
+                with st.chat_message(msg["role"]):
+                    if msg["role"] == "assistant":
+                        app.display_answer(msg["answer"])
+                    else:
+                        st.markdown(msg["content"])
 
-            # Create two columns for input and button
-            col1, col2 = st.columns([4, 1])
-            
-            with col1:
-                # Question input with Enter key handling
-                question = st.text_input(
-                    "Ask your F-1 visa question:",
-                    max_chars=500,
-                    help="Maximum 500 characters",
-                    key="question_input",
-                    on_change=handle_enter
+            prompt = st.chat_input("Ask your F-1 visa question...")
+            prompt = prompt or st.session_state.pop("_pending_prompt", None)
+
+            if prompt:
+                # Prior turns only -- this new prompt isn't "history" yet,
+                # it's the question being asked right now. Passed to
+                # get_answer() so a follow-up like "what about STEM OPT?"
+                # can be understood in context (see condense_question()).
+                chat_history = list(st.session_state.messages)
+
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
+                with st.chat_message("assistant"):
+                    with st.spinner("🔍 Researching your question..."):
+                        answer = app.get_answer(prompt, chat_history=chat_history)
+                    app.display_answer(answer)
+
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": answer["result"], "answer": answer}
                 )
-            
-            with col2:
-                submit_button = st.button(
-                    "Get Answer",
-                    type="primary",
-                    use_container_width=True
-                )
 
-            # (No "Cancel Query" button here: Streamlit runs the script
-            # synchronously, so process_query()'s try/finally always resets
-            # st.session_state.processing back to False before the app ever
-            # yields control back for a new click -- a cancel button in that
-            # window is structurally unreachable, not just currently unused.
-            # It looked functional but never was; removed rather than kept
-            # as UI that lies about what it can do.)
-
-            # Both the button click and an Enter-key press (which only sets
-            # the _enter_submitted flag in handle_enter()'s callback, not
-            # this call itself) land here -- process_query() always runs
-            # from the main script body's normal layout position, never
-            # from inside a callback. See handle_enter()'s docstring.
-            if submit_button or st.session_state.pop("_enter_submitted", False):
-                process_query(question)
-
-            # Display question history with timestamps
-            if st.session_state.question_history:
-                st.markdown("### Previous Questions")
-                for item in reversed(st.session_state.question_history[-5:]):
-                    with st.expander(
-                        f"Q: {item['question'][:50]}... ({item['timestamp']})"
-                    ):
-                        st.markdown(item["answer"])
-            
         else:
             st.error("Please provide an OpenAI API key to use F1rstAid")
             return

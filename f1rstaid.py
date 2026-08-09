@@ -1,14 +1,18 @@
 from html import escape
+import json
 import logging
 import os
 import re
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 from urllib.parse import urlparse
 import os.path
 
 import streamlit as st
 from dotenv import load_dotenv
+from openai import RateLimitError
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
@@ -169,6 +173,77 @@ EXAMPLE_QUESTIONS = [
     "What documents do I need for a STEM OPT extension?",
 ]
 
+# --- Shared-key usage limiting ----------------------------------------------
+#
+# Without this, anyone visiting the deployed app uses the owner's own
+# OPENAI_API_KEY automatically (the sidebar falls back to it whenever no one
+# types their own) -- with zero limit on how many real API calls a random
+# visitor could rack up. Two layers, checked together:
+#
+#   1. Per-session limit: lets someone try the app for real, then asks them
+#      to bring their own key to keep going. This alone is NOT a hard
+#      guarantee -- a new private/incognito window is a fresh session, so
+#      this is a soft, honest "try it out" gate, not abuse-proofing.
+#   2. A global daily counter, persisted to a small JSON file on disk, so
+#      the limit isn't purely per-session and can't be trivially reset by
+#      opening new sessions. Heroku's filesystem is ephemeral -- this
+#      resets on every dyno restart/redeploy, and under concurrent
+#      requests the read-modify-write below isn't atomic, so this is a
+#      best-effort soft cap, not a precise one. The one real, hard backstop
+#      against actually running up an unexpected bill is a spending limit
+#      configured directly in the OpenAI account dashboard -- that's a
+#      platform.openai.com setting, not something this app can set on its
+#      own behalf.
+FREE_TRIAL_QUERY_LIMIT = 5  # per browser session, using the shared/owner key
+DAILY_SHARED_KEY_LIMIT = 50  # total shared-key queries per day, all sessions
+USAGE_TRACKER_PATH = Path("usage_tracker.json")
+
+
+def _read_daily_shared_key_usage() -> int:
+    today = str(date.today())
+    try:
+        data = json.loads(USAGE_TRACKER_PATH.read_text())
+        if data.get("date") == today:
+            return int(data.get("count", 0))
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+        pass
+    return 0
+
+
+def _increment_daily_shared_key_usage() -> int:
+    today = str(date.today())
+    count = _read_daily_shared_key_usage() + 1
+    try:
+        USAGE_TRACKER_PATH.write_text(json.dumps({"date": today, "count": count}))
+    except OSError as e:
+        logging.error(f"Failed to persist daily shared-key usage counter: {e}")
+    return count
+
+
+def shared_key_limit_reached() -> Tuple[bool, str]:
+    """Checked before spending a shared-key API call on a new question --
+    never after. Only meaningful when the visitor is using the owner's
+    fallback key; a visitor who entered their own key is spending their own
+    credits and isn't subject to either limit (see main()'s call site)."""
+    session_count = st.session_state.get("shared_key_query_count", 0)
+    if session_count >= FREE_TRIAL_QUERY_LIMIT:
+        return True, (
+            f"🚦 You've used all {FREE_TRIAL_QUERY_LIMIT} free trial questions "
+            "for this session. To keep chatting, enter your own OpenAI API key "
+            "in the sidebar -- get one at "
+            "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
+        )
+
+    if _read_daily_shared_key_usage() >= DAILY_SHARED_KEY_LIMIT:
+        return True, (
+            "🚦 This app has reached its shared free-trial usage limit for "
+            "today. Please try again tomorrow, or enter your own OpenAI API "
+            "key in the sidebar to continue right now -- get one at "
+            "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
+        )
+
+    return False, ""
+
 
 class SourceWeightedRetriever(BaseRetriever):
     """Retrieves a wider candidate pool via similarity search, then re-ranks
@@ -258,6 +333,7 @@ Example: 'What documents do I need for STEM OPT extension?'\n
 # behavior.
 _EMPTY_QUESTION_RESULT = "Please enter a question about F-1 visas, OPT, or CPT."
 _ERROR_RESULT = "Error processing request. Please try again."
+_RATE_LIMIT_MARKER = "hit its OpenAI usage limit"
 _DECLINE_MARKER = "🚦 **Relevance Check**"
 _ABSTAIN_MARKER = "don't have enough information"
 _HELP_MARKERS = ("Hello! I'm F1rstAid", "🔍 **How to Ask Effective Questions**")
@@ -281,6 +357,7 @@ _ANSWER_BADGES = {
     ),
     "declined": ("🚦 Off-topic", None, "badge-declined"),
     "help": ("ℹ️ Guidance", None, "badge-help"),
+    "rate_limited": ("🔌 Usage limit", None, "badge-declined"),
 }
 
 
@@ -315,6 +392,8 @@ def classify_answer(answer: Dict) -> str:
         return "empty"
     if result == _ERROR_RESULT:
         return "error"
+    if _RATE_LIMIT_MARKER in result:
+        return "rate_limited"
     if _DECLINE_MARKER in result:
         return "declined"
     if any(marker in result for marker in _HELP_MARKERS):
@@ -744,6 +823,25 @@ class F1rstAidApp:
                 )
             return answer
 
+        except RateLimitError as e:
+            # OpenAI returns HTTP 429 for both true rate limiting and an
+            # exhausted billing quota -- either way, this is genuinely
+            # different from "something in this app broke" and deserves an
+            # honest, distinct message rather than the generic catch-all
+            # below, especially since the shared-key usage caps above are a
+            # soft, best-effort limit (see their module docstring) and a
+            # real quota exhaustion is exactly the failure mode they can't
+            # fully prevent.
+            logging.error(f"OpenAI rate limit / quota error: {str(e)}")
+            return {
+                "result": (
+                    "⚠️ This app has hit its OpenAI usage limit right now. "
+                    "Please try again later, or enter your own API key in "
+                    "the sidebar to continue immediately."
+                ),
+                "source_documents": [],
+            }
+
         except Exception as e:
             logging.error(f"Processing error: {str(e)}")
             return {
@@ -1032,17 +1130,31 @@ qualified immigration attorney before acting on it.
             
             if api_key:
                 set_api_key(api_key)
+                st.session_state["using_own_key"] = True
                 st.success("✅ API key set successfully!")
             elif get_api_key():
                 # A key is already available from a local .env or a prior
                 # session-state set (e.g. loaded via load_dotenv() at import
                 # time) -- the manual field being empty just means the user
-                # hasn't (re-)typed one, not that no key exists.
+                # hasn't (re-)typed one, not that no key exists. This is the
+                # shared/owner key, so the free-trial limits apply -- see
+                # shared_key_limit_reached().
+                st.session_state["using_own_key"] = False
                 st.info("✅ Using API key from environment.")
             else:
                 st.warning("⚠️ Please enter your OpenAI API key to continue")
                 return
-            
+
+            if not st.session_state.get("using_own_key", False):
+                remaining = max(
+                    0,
+                    FREE_TRIAL_QUERY_LIMIT - st.session_state.get("shared_key_query_count", 0),
+                )
+                st.caption(
+                    f"🎟️ {remaining} of {FREE_TRIAL_QUERY_LIMIT} free trial "
+                    "questions left this session (using the shared key)."
+                )
+
             st.markdown("""
             ### ℹ️ About API Keys
             1. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
@@ -1094,9 +1206,11 @@ qualified immigration attorney before acting on it.
             # full raw answer dict (not just the text), so display_answer()
             # can fully re-render the badge/citation/source-card presentation
             # identically to how it looked the first time, on every rerun.
+            # A limit-reached notice (below) has no "answer" dict -- it's
+            # not a real app answer, just a plain status message.
             for msg in st.session_state.messages:
                 with st.chat_message(msg["role"]):
-                    if msg["role"] == "assistant":
+                    if msg["role"] == "assistant" and "answer" in msg:
                         app.display_answer(msg["answer"])
                     else:
                         st.markdown(msg["content"])
@@ -1105,6 +1219,11 @@ qualified immigration attorney before acting on it.
             prompt = prompt or st.session_state.pop("_pending_prompt", None)
 
             if prompt:
+                using_own_key = st.session_state.get("using_own_key", False)
+                limited, limit_message = (
+                    (False, "") if using_own_key else shared_key_limit_reached()
+                )
+
                 # Prior turns only -- this new prompt isn't "history" yet,
                 # it's the question being asked right now. Passed to
                 # get_answer() so a follow-up like "what about STEM OPT?"
@@ -1115,14 +1234,29 @@ qualified immigration attorney before acting on it.
                 with st.chat_message("user"):
                     st.markdown(prompt)
 
-                with st.chat_message("assistant"):
-                    with st.spinner("🔍 Researching your question..."):
-                        answer = app.get_answer(prompt, chat_history=chat_history)
-                    app.display_answer(answer)
+                if limited:
+                    # Blocked before spending a shared-key API call, not
+                    # after -- this is the whole point of checking here.
+                    with st.chat_message("assistant"):
+                        st.warning(limit_message)
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": limit_message}
+                    )
+                else:
+                    if not using_own_key:
+                        st.session_state["shared_key_query_count"] = (
+                            st.session_state.get("shared_key_query_count", 0) + 1
+                        )
+                        _increment_daily_shared_key_usage()
 
-                st.session_state.messages.append(
-                    {"role": "assistant", "content": answer["result"], "answer": answer}
-                )
+                    with st.chat_message("assistant"):
+                        with st.spinner("🔍 Researching your question..."):
+                            answer = app.get_answer(prompt, chat_history=chat_history)
+                        app.display_answer(answer)
+
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": answer["result"], "answer": answer}
+                    )
 
         else:
             st.error("Please provide an OpenAI API key to use F1rstAid")

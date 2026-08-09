@@ -1,6 +1,32 @@
+import json
+from datetime import date
+
+import httpx
 import pytest
-from f1rstaid import AppConfig, CONDENSE_HISTORY_TURNS, F1rstAidApp, RelevanceFields
+from openai import RateLimitError
+
+import f1rstaid
+from f1rstaid import (
+    DAILY_SHARED_KEY_LIMIT,
+    FREE_TRIAL_QUERY_LIMIT,
+    AppConfig,
+    CONDENSE_HISTORY_TURNS,
+    F1rstAidApp,
+    RelevanceFields,
+    _increment_daily_shared_key_usage,
+    _read_daily_shared_key_usage,
+    classify_answer,
+    shared_key_limit_reached,
+)
 from rules_engine import UnemploymentFields
+
+
+def _fake_rate_limit_error() -> RateLimitError:
+    response = httpx.Response(
+        status_code=429,
+        request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"),
+    )
+    return RateLimitError("insufficient_quota", response=response, body=None)
 
 
 class _FakeLLMResponse:
@@ -277,3 +303,101 @@ def test_get_answer(app_config):
     assert answer is not None
     assert "result" in answer
     assert "source_documents" in answer
+
+
+# --- get_answer: RateLimitError gets a distinct message, not the generic one ---
+
+def test_get_answer_rate_limit_error_gets_distinct_message():
+    """A genuine OpenAI quota/rate-limit error (HTTP 429) must be
+    distinguishable from a generic processing error -- the shared-key usage
+    caps are a soft, best-effort limit (see shared_key_limit_reached()'s
+    docstring), so a real quota exhaustion getting through them is exactly
+    the failure mode that needs an honest, actionable message."""
+
+    class _RateLimitedQAChain:
+        def invoke(self, *args, **kwargs):
+            raise _fake_rate_limit_error()
+
+    app = F1rstAidApp(AppConfig())
+    app.llm = _FakeStructuredLLM(RelevanceFields(applies=True))
+    app.qa_chain = _RateLimitedQAChain()
+
+    result = app.get_answer("What is OPT?")
+
+    assert "hit its OpenAI usage limit" in result["result"]
+    assert classify_answer(result) == "rate_limited"
+
+
+# --- daily shared-key usage counter: pure file I/O, isolated per test ---
+
+def test_daily_usage_counter_persists_and_increments(tmp_path, monkeypatch):
+    tracker_path = tmp_path / "usage_tracker.json"
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tracker_path)
+
+    assert _read_daily_shared_key_usage() == 0
+    assert _increment_daily_shared_key_usage() == 1
+    assert _increment_daily_shared_key_usage() == 2
+    assert _read_daily_shared_key_usage() == 2
+
+    saved = json.loads(tracker_path.read_text())
+    assert saved["count"] == 2
+
+
+def test_daily_usage_counter_resets_on_a_new_date(tmp_path, monkeypatch):
+    tracker_path = tmp_path / "usage_tracker.json"
+    tracker_path.write_text(json.dumps({"date": "2000-01-01", "count": 999}))
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tracker_path)
+
+    assert _read_daily_shared_key_usage() == 0  # stale date -- doesn't count
+
+
+def test_daily_usage_counter_handles_missing_or_corrupt_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tmp_path / "does_not_exist.json")
+    assert _read_daily_shared_key_usage() == 0
+
+    corrupt_path = tmp_path / "corrupt.json"
+    corrupt_path.write_text("not valid json{{{")
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", corrupt_path)
+    assert _read_daily_shared_key_usage() == 0
+
+
+# --- shared_key_limit_reached: session + daily checks together ---
+
+def test_shared_key_limit_not_reached_when_under_both_limits(monkeypatch, tmp_path):
+    import streamlit as st
+
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tmp_path / "usage.json")
+    st.session_state["shared_key_query_count"] = 0
+
+    limited, message = shared_key_limit_reached()
+
+    assert limited is False
+    assert message == ""
+
+
+def test_shared_key_limit_reached_by_session_count(monkeypatch, tmp_path):
+    import streamlit as st
+
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tmp_path / "usage.json")
+    st.session_state["shared_key_query_count"] = FREE_TRIAL_QUERY_LIMIT
+
+    limited, message = shared_key_limit_reached()
+
+    assert limited is True
+    assert "free trial questions" in message
+
+
+def test_shared_key_limit_reached_by_daily_cap(monkeypatch, tmp_path):
+    import streamlit as st
+
+    tracker_path = tmp_path / "usage.json"
+    tracker_path.write_text(
+        json.dumps({"date": str(date.today()), "count": DAILY_SHARED_KEY_LIMIT})
+    )
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tracker_path)
+    st.session_state["shared_key_query_count"] = 0  # under the per-session limit
+
+    limited, message = shared_key_limit_reached()
+
+    assert limited is True
+    assert "shared free-trial usage limit for today" in message

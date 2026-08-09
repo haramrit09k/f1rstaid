@@ -158,3 +158,28 @@ anything that changes yearly. Even so, immigration rules do change --
 `last_verified` in `dataset.json` records when the expected answers were
 last checked against current USCIS/DHS guidance. Re-verify before trusting
 a big accuracy swing, and update `last_verified` when you do.
+
+## Model comparison findings (avoid re-litigating without new evidence)
+
+**gpt-3.5-turbo vs. gpt-4o-mini, tested 2026-08-09** (`eval/results/history.jsonl`,
+labels `gpt4o-mini-experiment` / `narrow-inference-prompt-fix`): gpt-3.5-turbo
+with its current tuned prompt scores 93.8% (30/32); gpt-4o-mini with the
+*same* prompt/k/temperature scores ~90.6% corrected -- roughly a wash, not a
+clear win either way, with a different failure profile (gpt-4o-mini fixed
+one hard case, gpt-3.5-turbo handled 3 others gpt-4o-mini abstained on).
+
+Root-caused the gpt-4o-mini failures by feeding both models the *exact same*
+retrieved chunks directly (bypassing any k/retrieval variance): gpt-3.5-turbo
+answered confidently and correctly from those chunks; gpt-4o-mini abstained
+anyway. This rules out retrieval/k as the cause -- it's a pure model-
+calibration difference, gpt-4o-mini defaults more conservative than
+gpt-3.5-turbo against this specific prompt, counter to the usual assumption
+that a newer/more-capable model will just be more willing to answer.
+
+**Decision**: stayed on gpt-3.5-turbo. Fixing gpt-4o-mini's conservatism
+would need its own dedicated prompt-tuning cycle (not a k sweep), which
+isn't worth the investment without a specific reason to want gpt-4o-mini
+(e.g. its latency was noticeably better -- p50 ~1150ms vs. ~1700ms -- so
+revisit this if latency becomes a priority). Don't re-run this comparison
+without either new eval questions or a specific hypothesis for why the
+outcome would differ.

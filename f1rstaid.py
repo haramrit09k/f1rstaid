@@ -166,11 +166,14 @@ DEFAULT_SOURCE_WEIGHT = 1.0
 
 # A few starter questions so a first-time visitor isn't staring at a blank
 # input box -- there's no other onboarding in this app.
+# (short chip label, full question actually submitted) -- kept separate so
+# the chips can read at a glance without changing what rules_engine/RAG
+# actually sees, which is the exact wording already verified this session.
 EXAMPLE_QUESTIONS = [
-    "How many days of unemployment am I allowed on OPT?",
-    "What is the 60-day grace period after I graduate?",
-    "Does cap-gap extend my work authorization?",
-    "What documents do I need for a STEM OPT extension?",
+    ("Unemployment days on OPT?", "How many days of unemployment am I allowed on OPT?"),
+    ("60-day grace period?", "What is the 60-day grace period after I graduate?"),
+    ("Does cap-gap extend work auth?", "Does cap-gap extend my work authorization?"),
+    ("STEM OPT extension docs?", "What documents do I need for a STEM OPT extension?"),
 ]
 
 # --- Shared-key usage limiting ----------------------------------------------
@@ -513,22 +516,6 @@ APP_CSS = """
    on narrow (mobile) viewports. */
 .source-block, .preview-text {
     overflow-wrap: anywhere;
-}
-
-.site-footer {
-    text-align: center;
-    background: linear-gradient(to right, #f8f9fa, #ffffff, #f8f9fa);
-    padding: 15px;
-    border-top: 1px solid #eee;
-    margin-top: 24px;
-}
-.site-footer span {
-    font-size: 14px;
-    color: #666;
-}
-.site-footer a {
-    text-decoration: none;
-    font-weight: 500;
 }
 
 @media (max-width: 640px) {
@@ -1101,7 +1088,7 @@ def main():
 
         # API Key Input Section
         with st.sidebar:
-            with st.expander("ℹ️ About F1rstAid", expanded=False):
+            with st.expander("ℹ️ About F1rstAid", expanded=True):
                 st.markdown(
                     """
 **What this is:** A RAG-based assistant over official F-1 guidance
@@ -1187,6 +1174,23 @@ qualified immigration attorney before acting on it.
                     st.session_state.messages = []
                     st.rerun()
 
+            # Footer lives in the sidebar, not the main pane: st.chat_input
+            # is pinned to the bottom of the viewport regardless of where in
+            # the script it's called, so a footer in normal document flow in
+            # the main pane ends up floating in a large empty gap above it
+            # on any page that doesn't have a full screen of conversation
+            # yet -- which is most first-time visits. Plain st.caption
+            # instead of the old custom-colored HTML card -- that card's
+            # fixed light background/gradient was sized for a wide main-pane
+            # banner and would look like a mismatched light box in the
+            # narrower sidebar; a native caption is theme-aware for free.
+            st.markdown("---")
+            st.caption(
+                "Built with ❤️ by "
+                "[@haramrit09k](https://github.com/haramrit09k) · "
+                "[LinkedIn](https://linkedin.com/in/haramrit09k)"
+            )
+
         # Initialize session state
         if "messages" not in st.session_state:
             st.session_state.messages = []
@@ -1209,10 +1213,10 @@ qualified immigration attorney before acting on it.
                 st.write("Ask me anything about F-1 visas!")
                 st.caption("Not sure where to start? Try one of these:")
                 chip_cols = st.columns(len(EXAMPLE_QUESTIONS))
-                for i, example in enumerate(EXAMPLE_QUESTIONS):
+                for i, (chip_label, full_question) in enumerate(EXAMPLE_QUESTIONS):
                     with chip_cols[i]:
-                        if st.button(example, key=f"example_{i}", use_container_width=True):
-                            st.session_state["_pending_prompt"] = example
+                        if st.button(chip_label, key=f"example_{i}", use_container_width=True):
+                            st.session_state["_pending_prompt"] = full_question
                             st.rerun()
 
             # Replay the conversation so far. Each assistant turn stores its
@@ -1274,32 +1278,6 @@ qualified immigration attorney before acting on it.
         else:
             st.error("Please provide an OpenAI API key to use F1rstAid")
             return
-
-        # Styled footer. Deliberately laid out in normal document flow
-        # (not position: fixed) -- a fixed footer on a narrow/mobile
-        # viewport, or once the page has more content than fits one
-        # screen, ends up overlapping the last bit of real content
-        # instead of sitting below it.
-        st.markdown("---")
-        st.markdown(
-            """
-            <div class='site-footer'>
-                <span>
-                    Built with ❤️ by
-                    <a href='https://github.com/haramrit09k' target='_blank'
-                        style='color: #0366d6;'>
-                        @haramrit09k
-                    </a>
-                    <span style='margin: 0 8px;'>|</span>
-                    <a href='https://linkedin.com/in/haramrit09k' target='_blank'
-                        style='color: #0077b5;'>
-                        LinkedIn
-                    </a>
-                </span>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
 
     except Exception as e:
         logging.error(f"Application error: {str(e)}")

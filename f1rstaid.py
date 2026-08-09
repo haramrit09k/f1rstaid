@@ -250,7 +250,12 @@ APP_CSS = """
 .badge-help { background-color: #fff4e5; color: #a05a00; }
 
 .source-block {
+    /* Background here is a fixed light color regardless of Streamlit's
+       theme -- so text color inside has to be fixed too, not inherited.
+       Left as inherited before, it picked up Streamlit's dark-theme body
+       color (near-white), which is invisible on this always-light card. */
     background-color: #ffffff;
+    color: #24292f;
     border: 1px solid #e1e4e8;
     margin: 12px 0;
     padding: 16px 20px;
@@ -263,11 +268,15 @@ APP_CSS = """
     border-bottom: 2px solid #0366d6;
     padding-bottom: 5px;
 }
+.source-block strong {
+    color: #24292f;
+}
 .source-content {
     margin-left: 10px;
 }
 .preview-box {
     background-color: #f6f8fa;
+    color: #24292f;
     padding: 10px;
     border-radius: 5px;
     margin-top: 10px;
@@ -277,6 +286,7 @@ APP_CSS = """
     font-size: 0.9em;
     line-height: 1.4;
     white-space: pre-wrap;
+    color: #24292f;
 }
 .source-block a {
     color: #0366d6;

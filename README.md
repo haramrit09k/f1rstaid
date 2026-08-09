@@ -22,6 +22,26 @@ A smart assistant for F-1 students navigating U.S. immigration regulations, powe
   - OpenAI embeddings for accurate retrieval
   - Context-aware responses
 
+## 🗺️ Architecture
+
+```mermaid
+flowchart LR
+    subgraph Weekly["Weekly refresh"]
+        S["PDFs · websites\nReddit · RSS"] --> I["ingest.py"] --> V[("faiss_index/")]
+    end
+
+    subgraph PerQuestion["Per question"]
+        Q["Student question"] --> R{"Deterministic\nrule match?"}
+        R -- "yes (e.g. day-count caps)" --> D["rules_engine\n(plain Python)"]
+        R -- "no" --> F["FAISS retrieval\n+ gpt-3.5-turbo"]
+        V -.-> F
+        D --> A["Answer"]
+        F --> A
+    end
+```
+
+Most questions are answered by retrieval + the LLM. A small set of exact, arithmetic questions (like OPT unemployment day caps) are routed to deterministic Python instead, so the answer is computed rather than guessed. The knowledge base itself refreshes weekly from PDFs, official websites, Reddit, and RSS feeds.
+
 ## 🛠️ Installation
 
 1. **Clone the Repository**

@@ -505,15 +505,22 @@ def compute_cap_gap_answer(fields: CapGapFields) -> str:
 
 
 def _general_cap_gap_answer() -> str:
+    # Leads with an actual definition of the term before the eligibility
+    # mechanics -- a real gap reported live: "what does cap-gap mean?" got
+    # this text's eligibility-rules-first version, which is factually
+    # correct but never actually says what "cap-gap" *is* before diving
+    # into who qualifies.
     return (
-        "If your H-1B petition was properly filed while you were in valid "
-        "F-1 status and before your OPT (or EAD) expired -- requesting a "
-        "change of status effective October 1 -- your F-1 status and "
-        "current work authorization are automatically extended under "
-        "'cap-gap' through September 30, as long as the petition remains "
-        "pending or is approved. If it's denied, the extension ends "
-        "immediately on the denial date. Confirm your specific situation "
-        "with your DSO."
+        "'Cap-gap' refers to the gap between when your F-1 status (or "
+        "OPT/EAD work authorization) ends and October 1, the date an "
+        "approved change to H-1B status can begin. If your H-1B petition "
+        "was properly filed while you were still in valid F-1 status and "
+        "before your OPT (or EAD) expired -- requesting that change of "
+        "status effective October 1 -- your F-1 status and current work "
+        "authorization are automatically extended through September 30 to "
+        "bridge that gap, as long as the petition remains pending or is "
+        "approved. If it's denied, the extension ends immediately on the "
+        "denial date. Confirm your specific situation with your DSO."
     )
 
 

@@ -1275,6 +1275,15 @@ qualified immigration attorney before acting on it.
                         {"role": "assistant", "content": answer["result"], "answer": answer}
                     )
 
+                # The sidebar (which shows the remaining free-question
+                # count) renders earlier in this same script pass, before
+                # this block -- so without forcing another rerun, it always
+                # shows the count as of *before* the question just asked,
+                # not reflecting it until some later, unrelated interaction
+                # triggers the next rerun. Forcing one here makes the
+                # sidebar correct immediately, every time.
+                st.rerun()
+
         else:
             st.error("Please provide an OpenAI API key to use F1rstAid")
             return

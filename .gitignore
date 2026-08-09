@@ -192,3 +192,8 @@ crawler/websites_robots.json
 relevant_urls.txt
 crawler_state.json
 websites_robots.json
+
+# Eval harness: per-run detail files are local artifacts (can be large and
+# numerous); the accumulated results/history.jsonl trend ledger is committed
+# so accuracy-over-time is tracked in git.
+eval/results/*.json

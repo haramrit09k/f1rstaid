@@ -38,15 +38,15 @@ RSS_FEEDS = [
 ]
 
 
-def append_to_vector_store(docs: List[Document]) -> bool:
+def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss_index") -> bool:
     """Append new documents to existing vector store."""
     try:
         embeddings = OpenAIEmbeddings()
         vector_store = FAISS.load_local(
-            "faiss_index", embeddings, allow_dangerous_deserialization=True
+            vector_store_path, embeddings, allow_dangerous_deserialization=True
         )
         vector_store.add_documents(docs)
-        vector_store.save_local("faiss_index")
+        vector_store.save_local(vector_store_path)
         return True
     except Exception as e:
         logging.error(f"Error appending to vector store: {e}")

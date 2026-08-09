@@ -1120,18 +1120,27 @@ qualified immigration attorney before acting on it.
                     """
                 )
 
-            st.markdown("### 🔑 OpenAI API Key")
+            st.markdown("### 🔑 API Access")
+            st.caption(
+                f"Try it free -- {FREE_TRIAL_QUERY_LIMIT} questions per "
+                "session on the shared key, no setup needed. Have your own "
+                "OpenAI key? Add it below for unlimited questions."
+            )
             api_key = st.text_input(
-                "Enter your OpenAI API key:",
+                "Your own OpenAI API key (optional):",
                 type="password",
-                help="Get your API key from https://platform.openai.com/api-keys",
+                help=(
+                    "Get one at https://platform.openai.com/api-keys -- only "
+                    "needed if you want unlimited questions instead of the "
+                    "free trial."
+                ),
                 key="api_key_input"
             )
-            
+
             if api_key:
                 set_api_key(api_key)
                 st.session_state["using_own_key"] = True
-                st.success("✅ API key set successfully!")
+                st.success("✅ Using your own key -- no question limit.")
             elif get_api_key():
                 # A key is already available from a local .env or a prior
                 # session-state set (e.g. loaded via load_dotenv() at import
@@ -1140,32 +1149,36 @@ qualified immigration attorney before acting on it.
                 # shared/owner key, so the free-trial limits apply -- see
                 # shared_key_limit_reached().
                 st.session_state["using_own_key"] = False
-                st.info("✅ Using API key from environment.")
-            else:
-                st.warning("⚠️ Please enter your OpenAI API key to continue")
-                return
-
-            if not st.session_state.get("using_own_key", False):
                 remaining = max(
                     0,
                     FREE_TRIAL_QUERY_LIMIT - st.session_state.get("shared_key_query_count", 0),
                 )
-                st.caption(
-                    f"🎟️ {remaining} of {FREE_TRIAL_QUERY_LIMIT} free trial "
-                    "questions left this session (using the shared key)."
+                st.info(
+                    f"🎟️ Using the shared trial key -- {remaining} of "
+                    f"{FREE_TRIAL_QUERY_LIMIT} free questions left this session."
                 )
+            else:
+                # Only reachable when no shared key is configured for this
+                # deployment at all (e.g. running locally with no .env) --
+                # on the live deployment, get_api_key() above always finds
+                # the shared key, so a visitor never actually hits this.
+                st.warning(
+                    "⚠️ No shared trial key is configured for this "
+                    "deployment. Please enter your own OpenAI API key above "
+                    "to continue."
+                )
+                return
 
             st.markdown("""
             ### ℹ️ About API Keys
-            1. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
-            2. Your key is stored securely in session state
-            3. Key is never saved or logged
-            4. Session expires when you close the browser
-
-            ### 💰 Usage
-            - OpenAI charges per API call
-            - Check [pricing](https://openai.com/pricing)
-            - Monitor usage in your OpenAI account
+            - **Shared trial key**: a few free questions per session, plus a
+              daily cap shared across everyone, so it doesn't run dry for
+              other visitors.
+            - **Your own key**: unlimited questions, billed to your own
+              OpenAI account. Stored only in this browser session -- never
+              saved or logged.
+            - Get a key at [OpenAI Platform](https://platform.openai.com/api-keys),
+              check [pricing](https://openai.com/pricing).
             """)
 
             if st.session_state.get("messages"):

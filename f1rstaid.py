@@ -15,6 +15,7 @@ from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
+from pydantic import BaseModel, Field
 from typing import Optional
 
 import rules_engine
@@ -52,6 +53,52 @@ _F1_KEYWORDS = {
     "internship", "employer", "h-1b", "h1b", "sponsor", "lottery",
     "off-campus", "on-campus",
 }
+
+
+class RelevanceFields(BaseModel):
+    """Second-stage relevance judgment, used only when a question already
+    matched an _F1_KEYWORDS keyword. That match is necessary but not
+    sufficient -- e.g. "on F-1 OPT, can we invest in Roth IRA?" contains
+    'F-1' and 'OPT' but is really a tax/retirement-account question with no
+    supporting content in this app's knowledge base at all. Mirrors the
+    `applies` field pattern already used throughout rules_engine.py.
+
+    Deliberately a lower, more inclusive bar than rules_engine's `applies`
+    fields: those gate a *canned, deterministic* answer, so precision
+    matters (a wrong rule match is a wrong answer). This just gates whether
+    to *attempt* a RAG answer at all -- and RAG already has its own safety
+    net (it abstains when the retrieved context doesn't support an answer).
+    So this should only filter out what's genuinely unrelated to F-1
+    status, not everything RAG might not have a clean answer for. Tuned
+    live against a real false-decline: "can I collect unemployment
+    insurance benefits on OPT?" is a legitimate status-adjacent question
+    (does this affect maintaining F-1 status?) even though the honest
+    answer is "ask your DSO" -- very different from the Roth IRA case,
+    where the question has nothing to do with visa status at all.
+    """
+
+    applies: bool = Field(
+        description=(
+            "True if this question is about F-1 student visa status, "
+            "maintaining status, OPT/CPT, SEVIS, employment authorization, "
+            "or something DHS/SEVIS regulations for F-1 students actually "
+            "govern -- including secondary effects on status, like whether "
+            "receiving a benefit affects the unemployment-day count SEVIS "
+            "tracks during OPT. The test: would a DSO (who only handles "
+            "immigration status, not personal finance/tax/general life "
+            "advice) actually be the right person to ask, because the "
+            "answer depends on immigration regulations -- or would this "
+            "really be a question for an accountant, bank, or financial "
+            "advisor regardless of the person's visa status, with F-1/OPT "
+            "just being incidental context about who's asking? Set this "
+            "False for the latter (e.g. general investment, retirement "
+            "account, or banking questions -- opening a Roth IRA has "
+            "nothing to do with F-1/SEVIS regulations even if the person "
+            "asking happens to be on OPT). When genuinely uncertain "
+            "whether DHS/SEVIS regulations are actually implicated, set "
+            "this True."
+        )
+    )
 
 QA_PROMPT = PromptTemplate(
     input_variables=["context", "question"],
@@ -511,8 +558,32 @@ class F1rstAidApp:
         os.environ["OPENAI_API_KEY"] = api_key
         return True
 
+    _OFF_TOPIC_EXPLANATION = (
+        "This doesn't appear to be an F-1 visa question. "
+        "I can help with OPT/CPT eligibility, SEVIS, employment authorization, "
+        "maintaining F-1 status, travel requirements, and related topics."
+    )
+
     def _is_relevant_question(self, question: str) -> Tuple[bool, str]:
-        """Check relevance using fast keyword matching (no API call)."""
+        """Two-stage relevance check. Stage 1 (free, keyword-only): if no
+        _F1_KEYWORDS term appears at all, decline immediately -- this alone
+        correctly catches the obvious case ("what's the weather today?").
+        Stage 2 (LLM-judged, only reached if stage 1 matched): a keyword
+        match is necessary but not sufficient -- a tax/financial/general
+        question that merely mentions "F-1" or "OPT" as context (e.g. "on
+        F-1 OPT, can we invest in Roth IRA?") would pass stage 1 and then
+        just waste a RAG retrieval+generation call that can only abstain,
+        since nothing in the knowledge base actually covers it. Stage 2
+        catches that case with one cheap classification call instead --
+        net cheaper than today for false positives, and gives an honest
+        "off-topic" decline instead of a vague "not enough information."
+
+        Gracefully degrades to stage-1-only if self.llm isn't set (e.g. a
+        test constructing F1rstAidApp without calling initialize()) or if
+        the LLM call itself fails -- this check enhances relevance
+        detection, it should never be why a genuinely relevant question
+        can't be answered.
+        """
         clean_q = question.strip().lower()
 
         # First check for predefined help questions
@@ -520,14 +591,47 @@ class F1rstAidApp:
             if any(trigger in clean_q for trigger in entry["triggers"]):
                 return True, "Help question detected"
 
-        if any(kw in clean_q for kw in _F1_KEYWORDS):
-            return True, "F-1 topic detected"
+        if not any(kw in clean_q for kw in _F1_KEYWORDS):
+            return False, self._OFF_TOPIC_EXPLANATION
 
-        return False, (
-            "This doesn't appear to be an F-1 visa question. "
-            "I can help with OPT/CPT eligibility, SEVIS, employment authorization, "
-            "maintaining F-1 status, travel requirements, and related topics."
-        )
+        if self.llm is not None:
+            try:
+                # Concrete contrastive examples, not just the abstract rule
+                # in RelevanceFields.applies's description -- verified live
+                # that description text alone wasn't enough for gpt-3.5-turbo
+                # to reliably draw this particular distinction (same class
+                # of instruction-following limit as the earlier elig-008
+                # finding). A directly analogous pair (unemployment
+                # insurance vs. Roth IRA -- both financial topics, only one
+                # of which SEVIS regulations actually track) anchors the
+                # judgment far better than the rule stated abstractly.
+                fields = self.llm.with_structured_output(RelevanceFields).invoke(
+                    "Is this question genuinely about F-1 student visa status, "
+                    "OPT/CPT, SEVIS, employment authorization, or something "
+                    "DHS/SEVIS regulations actually govern -- or does it just "
+                    "mention F-1/OPT as incidental context for a topic (tax, "
+                    "investing, banking, general life advice) that has "
+                    "nothing to do with visa status?\n\n"
+                    "Examples:\n"
+                    "- 'Can I collect unemployment insurance while on OPT?' "
+                    "-> True (SEVIS tracks unemployment days during OPT, so "
+                    "this touches status maintenance directly)\n"
+                    "- 'On F-1 OPT, can I invest in a Roth IRA?' -> False "
+                    "(retirement account eligibility is an IRS/tax matter "
+                    "with no connection to F-1/SEVIS status)\n"
+                    "- 'Do I need to file taxes as an F-1 student?' -> True "
+                    "(nonresident-alien tax filing obligations are a common, "
+                    "genuinely F-1-specific question)\n"
+                    "- 'What's a good budgeting app?' -> False (general "
+                    "personal finance, unrelated to visa status)\n\n"
+                    f"Question: {question}"
+                )
+                if not fields.applies:
+                    return False, self._OFF_TOPIC_EXPLANATION
+            except Exception as e:
+                logging.error(f"Relevance LLM check failed, falling back to keyword match: {e}")
+
+        return True, "F-1 topic detected"
 
     @staticmethod
     def _parse_response_section(response: str, header: str) -> str:

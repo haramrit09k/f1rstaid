@@ -1,5 +1,5 @@
 import pytest
-from f1rstaid import AppConfig, CONDENSE_HISTORY_TURNS, F1rstAidApp
+from f1rstaid import AppConfig, CONDENSE_HISTORY_TURNS, F1rstAidApp, RelevanceFields
 from rules_engine import UnemploymentFields
 
 
@@ -42,6 +42,78 @@ class _FakeStructuredLLM:
 
     def with_structured_output(self, model):
         return _FakeExtractor(self._result)
+
+
+class _BrokenExtractor:
+    def invoke(self, prompt):
+        raise RuntimeError("simulated relevance-check LLM failure")
+
+
+class _BrokenStructuredLLM:
+    def with_structured_output(self, model):
+        return _BrokenExtractor()
+
+
+# --- _is_relevant_question: two-stage keyword + LLM-judged check ---
+
+def test_relevance_check_no_keyword_match_declines_without_calling_llm():
+    """A question with zero F1 keywords must decline at the free,
+    keyword-only stage -- the LLM should never even be consulted. Proven
+    by giving it an LLM that would raise if called at all."""
+    app = F1rstAidApp(AppConfig())
+    app.llm = _BrokenStructuredLLM()
+
+    relevant, explanation = app._is_relevant_question("What's the weather like today?")
+
+    assert relevant is False
+    assert "doesn't appear to be an F-1 visa question" in explanation
+
+
+def test_relevance_check_keyword_match_llm_confirms_relevant():
+    app = F1rstAidApp(AppConfig())
+    app.llm = _FakeStructuredLLM(RelevanceFields(applies=True))
+
+    relevant, explanation = app._is_relevant_question("How long does OPT processing take?")
+
+    assert relevant is True
+
+
+def test_relevance_check_keyword_match_but_llm_says_not_applicable_declines():
+    """The real bug this was built for: 'on F-1 OPT, can we invest in Roth
+    IRA?' contains 'F-1' and 'OPT' (passes the keyword stage) but is really
+    a tax/retirement-account question with no supporting content in this
+    app's knowledge base at all."""
+    app = F1rstAidApp(AppConfig())
+    app.llm = _FakeStructuredLLM(RelevanceFields(applies=False))
+
+    relevant, explanation = app._is_relevant_question(
+        "on F-1 OPT, can we invest in Roth IRA?"
+    )
+
+    assert relevant is False
+    assert "doesn't appear to be an F-1 visa question" in explanation
+
+
+def test_relevance_check_llm_failure_falls_back_to_keyword_match():
+    """The LLM stage is an enhancement, not a requirement -- a failure here
+    must never be the reason a genuinely relevant question goes unanswered."""
+    app = F1rstAidApp(AppConfig())
+    app.llm = _BrokenStructuredLLM()
+
+    relevant, explanation = app._is_relevant_question("How long does OPT processing take?")
+
+    assert relevant is True
+
+
+def test_relevance_check_no_llm_set_falls_back_to_keyword_match():
+    """Mirrors how tests construct F1rstAidApp without calling initialize()
+    -- self.llm stays None, and the check must still work via stage 1 alone."""
+    app = F1rstAidApp(AppConfig())
+    assert app.llm is None
+
+    relevant, _ = app._is_relevant_question("How long does OPT processing take?")
+
+    assert relevant is True
 
 
 # --- condense_question: pure logic against a fake LLM, no API calls ---

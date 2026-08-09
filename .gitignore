@@ -180,8 +180,6 @@ cython_debug/
 
 .streamlit/
 
-docs/
-
 # Crawler specific files
 crawler/crawler_state.json
 crawler/relevant_urls.txt

@@ -8,6 +8,7 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 45  # fail fast and visibly, not silently for 6h (GitHub's hard ceiling)
     permissions:
       contents: write
 

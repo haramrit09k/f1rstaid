@@ -133,7 +133,17 @@ class ContentProcessor:
             return None
 
     async def scrape_reddit(self) -> List[Document]:
-        """Scrape relevant Reddit posts and comments."""
+        """Scrape relevant Reddit posts and comments.
+
+        PRAW is synchronous, so the actual scraping runs in a worker thread
+        (asyncio.to_thread) instead of blocking the event loop -- without
+        this, every other coroutine gathered alongside this one (web/RSS
+        updates) is fully stalled for the entire scrape duration.
+        """
+        return await asyncio.to_thread(self._scrape_reddit_sync)
+
+    def _scrape_reddit_sync(self) -> List[Document]:
+        """Blocking PRAW scrape. Only call via scrape_reddit()'s to_thread wrapper."""
         try:
             logging.info("Starting Reddit content scraping...")
             reddit = praw.Reddit(**REDDIT_CONFIG)

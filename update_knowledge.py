@@ -38,15 +38,18 @@ RSS_FEEDS = [
 ]
 
 
-def append_to_vector_store(docs: List[Document]) -> bool:
+def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss_index") -> bool:
     """Append new documents to existing vector store."""
     try:
-        embeddings = OpenAIEmbeddings()
+        # request_timeout: a stalled embeddings call must raise, not hang --
+        # the weekly update workflow silently hung for 6h/run for months
+        # before this was added.
+        embeddings = OpenAIEmbeddings(request_timeout=60)
         vector_store = FAISS.load_local(
-            "faiss_index", embeddings, allow_dangerous_deserialization=True
+            vector_store_path, embeddings, allow_dangerous_deserialization=True
         )
         vector_store.add_documents(docs)
-        vector_store.save_local("faiss_index")
+        vector_store.save_local(vector_store_path)
         return True
     except Exception as e:
         logging.error(f"Error appending to vector store: {e}")
@@ -165,11 +168,19 @@ async def update_from_rss() -> bool:
 
 
 async def _run_all_updates() -> list:
-    return list(await asyncio.gather(
-        update_knowledge_base(),  # Reddit
-        update_web_sources(),     # USCIS/DHS/law firm pages
-        update_from_rss(),        # RSS feeds (USCIS alerts, NAFSA)
-    ))
+    """Run sequentially, not via asyncio.gather.
+
+    Each of these ends by loading, modifying, and saving the *same*
+    faiss_index/ path (append_to_vector_store). Running them concurrently
+    races three independent load->add->save cycles against the same files --
+    each function already handles its own errors and returns a bool rather
+    than raising, so sequencing them costs some wall-clock time but has no
+    other downside, and removes the race entirely.
+    """
+    reddit_result = await update_knowledge_base()  # Reddit
+    web_result = await update_web_sources()         # USCIS/DHS/law firm pages
+    rss_result = await update_from_rss()             # RSS feeds (USCIS alerts, NAFSA)
+    return [reddit_result, web_result, rss_result]
 
 
 if __name__ == "__main__":

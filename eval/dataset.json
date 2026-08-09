@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "last_verified": "2026-08-09",
+  "notes": "Expected keypoints are stable, long-standing F-1 regulatory facts (day counts, form numbers, category names) chosen specifically to avoid dollar figures and other values that change frequently. Re-verify against current USCIS/DHS guidance periodically -- see README.md.",
+  "questions": [
+    {
+      "id": "fact-001",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "What form do F-1 students use to apply for Optional Practical Training (OPT)?",
+      "expected_keypoints": ["I-765"],
+      "must_decline": false
+    },
+    {
+      "id": "fact-002",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "What is the maximum allowed period of unemployment during the standard 12-month post-completion OPT?",
+      "expected_keypoints": ["90 day"],
+      "must_decline": false
+    },
+    {
+      "id": "fact-003",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "How long is the standard post-completion OPT period for F-1 students?",
+      "expected_keypoints": [],
+      "expected_keypoints_any": ["12 month", "12-month", "one full year", "one year"],
+      "must_decline": false,
+      "notes": "expected_keypoints_any covers both phrasings observed in real runs: '12 months' and 'one full year' (same fact, model phrases it either way depending on which chunk it retrieves)."
+    },
+    {
+      "id": "fact-004",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "How long is the STEM OPT extension?",
+      "expected_keypoints": ["24 month"],
+      "must_decline": false
+    },
+    {
+      "id": "fact-005",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "What form must be completed as a formal training plan for a STEM OPT extension?",
+      "expected_keypoints": ["I-983"],
+      "must_decline": false
+    },
+    {
+      "id": "fact-006",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "What is the grace period after completing a program of study for an F-1 student who is not continuing on OPT?",
+      "expected_keypoints": ["60 day"],
+      "must_decline": false
+    },
+    {
+      "id": "fact-007",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "What document, generated through SEVIS, is required for an F-1 student to enter the US?",
+      "expected_keypoints": ["I-20"],
+      "must_decline": false
+    },
+    {
+      "id": "fact-008",
+      "category": "factual_lookup",
+      "difficulty": "easy",
+      "question": "What is the name of the government system that tracks F-1 student status and records?",
+      "expected_keypoints": ["SEVIS"],
+      "must_decline": false
+    },
+    {
+      "id": "elig-001",
+      "category": "eligibility_multi_condition",
+      "difficulty": "medium",
+      "question": "I'm on a 12-month post-completion OPT and I've been unemployed for 95 days so far. Am I still maintaining status?",
+      "expected_keypoints": ["90 day"],
+      "expected_keypoints_any": ["violat", "auto-terminat", "not maintaining status", "out of status"],
+      "must_decline": false,
+      "notes": "Tests whether the model applies the 90-day unemployment cap correctly rather than just retrieving unrelated OPT text. expected_keypoints_any covers real observed phrasings for 'this is a problem' beyond the literal word 'violation'."
+    },
+    {
+      "id": "elig-002",
+      "category": "eligibility_multi_condition",
+      "difficulty": "hard",
+      "question": "I'm on a STEM OPT extension and have accumulated 100 total days of unemployment across my initial OPT and the STEM extension combined. Am I in violation?",
+      "expected_keypoints": ["150 day"],
+      "must_decline": false,
+      "notes": "Tests the aggregate 150-day cap across both OPT periods, a common source of confusion/error."
+    },
+    {
+      "id": "elig-003",
+      "category": "eligibility_multi_condition",
+      "difficulty": "medium",
+      "question": "Can I start a STEM OPT extension with an employer that is not enrolled in E-Verify?",
+      "expected_keypoints": ["E-Verify"],
+      "must_decline": false
+    },
+    {
+      "id": "elig-004",
+      "category": "eligibility_multi_condition",
+      "difficulty": "medium",
+      "question": "If I change employers during my STEM OPT extension, what am I required to do regarding my DSO and Form I-983?",
+      "expected_keypoints": ["I-983", "DSO"],
+      "must_decline": false
+    },
+    {
+      "id": "elig-005",
+      "category": "eligibility_multi_condition",
+      "difficulty": "hard",
+      "question": "Can I do full-time Curricular Practical Training (CPT) before completing one full academic year?",
+      "expected_keypoints": ["academic year"],
+      "must_decline": false
+    },
+    {
+      "id": "elig-006",
+      "category": "eligibility_multi_condition",
+      "difficulty": "hard",
+      "question": "Does doing 12 or more months of full-time CPT affect my eligibility for OPT afterward?",
+      "expected_keypoints": ["eligib"],
+      "must_decline": false,
+      "notes": "Correct answer must state that 12+ months full-time CPT eliminates OPT eligibility."
+    },
+    {
+      "id": "elig-007",
+      "category": "eligibility_multi_condition",
+      "difficulty": "hard",
+      "question": "My OPT expired but I have a pending H-1B petition filed on time under cap-gap, with a requested H-1B start date of October 1. Am I still authorized to work right now?",
+      "expected_keypoints": ["cap-gap"],
+      "must_decline": false
+    },
+    {
+      "id": "elig-008",
+      "category": "eligibility_multi_condition",
+      "difficulty": "medium",
+      "question": "Can I apply for a STEM OPT extension if my degree is not on the DHS STEM Designated Degree Program list?",
+      "expected_keypoints": ["STEM Designated Degree"],
+      "must_decline": false
+    },
+    {
+      "id": "time-001",
+      "category": "timeline_math",
+      "difficulty": "medium",
+      "question": "My F-1 program end date is May 15 and I am not doing OPT or any other authorized activity. By what calendar date must I leave the US under the standard grace period?",
+      "expected_keypoints": ["July 14"],
+      "must_decline": false
+    },
+    {
+      "id": "time-002",
+      "category": "timeline_math",
+      "difficulty": "hard",
+      "question": "My OPT authorization ends June 1 and I have a cap-gap extension because my H-1B petition was filed on time. Until roughly what date can I typically continue working under cap-gap?",
+      "expected_keypoints": [],
+      "expected_keypoints_any": ["September 30", "October 1"],
+      "must_decline": false
+    },
+    {
+      "id": "time-003",
+      "category": "timeline_math",
+      "difficulty": "medium",
+      "question": "How many cumulative days of unemployment am I allowed during the initial 12-month OPT period before I'm out of status?",
+      "expected_keypoints": ["90 day"],
+      "must_decline": false
+    },
+    {
+      "id": "time-004",
+      "category": "timeline_math",
+      "difficulty": "medium",
+      "question": "Roughly how many days before my current OPT authorization expires should I file for the STEM OPT extension?",
+      "expected_keypoints": ["90 day"],
+      "must_decline": false
+    },
+    {
+      "id": "time-005",
+      "category": "timeline_math",
+      "difficulty": "hard",
+      "question": "I used 60 days of unemployment during my initial 12-month OPT. If the aggregate cap across OPT and STEM OPT extension is 150 days, how many unemployment days do I have left once I start my STEM extension?",
+      "expected_keypoints": ["90 day"],
+      "must_decline": false,
+      "notes": "Requires the model to do 150 - 60 = 90 arithmetic correctly, not just retrieve a chunk."
+    },
+    {
+      "id": "time-006",
+      "category": "timeline_math",
+      "difficulty": "easy",
+      "question": "How many days do I have to report a change of address to my DSO under SEVIS requirements?",
+      "expected_keypoints": ["10 day"],
+      "must_decline": false
+    },
+    {
+      "id": "edge-001",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "I'm on OPT and my company just laid me off. Can I start my own business and count that as qualifying employment?",
+      "expected_keypoints": ["DSO"],
+      "must_decline": false,
+      "notes": "Ambiguous/high-stakes scenario. A good answer hedges and directs the student to verify with their DSO rather than asserting a confident yes/no."
+    },
+    {
+      "id": "edge-002",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "I'm transferring schools in the middle of my OPT. Does my SEVIS record and work authorization transfer automatically?",
+      "expected_keypoints": ["DSO"],
+      "must_decline": false
+    },
+    {
+      "id": "edge-003",
+      "category": "edge_case",
+      "difficulty": "medium",
+      "question": "My I-20 lists the wrong employer name for my CPT authorization. Can I still start work while it gets corrected?",
+      "expected_keypoints": ["I-20"],
+      "must_decline": false,
+      "notes": "Correct answer should say no -- must have a corrected I-20 authorizing the correct employer before starting work."
+    },
+    {
+      "id": "edge-004",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "Can F-1 students on OPT work fully remotely for an employer based outside the United States?",
+      "expected_keypoints": ["DSO"],
+      "must_decline": false,
+      "notes": "Genuinely unsettled/nuanced area. Hedging and recommending DSO/USCIS verification counts as correct; a confident unqualified yes or no should be treated as a failure."
+    },
+    {
+      "id": "oos-001",
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "question": "What's the weather like today?",
+      "expected_keypoints": [],
+      "must_decline": true
+    },
+    {
+      "id": "oos-002",
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "question": "What's a good recipe for chocolate chip cookies?",
+      "expected_keypoints": [],
+      "must_decline": true
+    },
+    {
+      "id": "oos-003",
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "question": "How do I fix a NullPointerException in my Java code?",
+      "expected_keypoints": [],
+      "must_decline": true
+    },
+    {
+      "id": "oos-004",
+      "category": "out_of_scope",
+      "difficulty": "easy",
+      "question": "Who won the last World Cup?",
+      "expected_keypoints": [],
+      "must_decline": true
+    },
+    {
+      "id": "help-001",
+      "category": "help",
+      "difficulty": "easy",
+      "question": "What can you help me with?",
+      "expected_keypoints": ["Expertise"],
+      "must_decline": false
+    },
+    {
+      "id": "help-002",
+      "category": "help",
+      "difficulty": "easy",
+      "question": "How do I ask you a good question?",
+      "expected_keypoints": ["Effective Questions"],
+      "must_decline": false
+    }
+  ]
+}

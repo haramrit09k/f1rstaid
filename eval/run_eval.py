@@ -62,10 +62,16 @@ def git_provenance() -> dict:
     }
 
 
+def _normalize(text: str) -> str:
+    """Lowercase and fold hyphens to spaces so '90-day' and '90 day' compare equal --
+    the model phrases the same fact either way depending on retrieved chunk wording."""
+    return text.lower().replace("-", " ")
+
+
 def score_question(question: dict, answer: dict, latency_ms: float = None) -> dict:
     """Score a single question/answer pair. Returns a result dict."""
     result_text = (answer or {}).get("result", "") or ""
-    lower_text = result_text.lower()
+    lower_text = _normalize(result_text)
     declined = DECLINE_MARKER.lower() in lower_text
     abstained = ABSTAIN_MARKER in lower_text
 
@@ -95,9 +101,9 @@ def score_question(question: dict, answer: dict, latency_ms: float = None) -> di
     all_kw = question.get("expected_keypoints", [])
     any_kw = question.get("expected_keypoints_any", [])
 
-    matched = [kw for kw in all_kw if kw.lower() in lower_text]
-    missing = [kw for kw in all_kw if kw.lower() not in lower_text]
-    any_matched = [kw for kw in any_kw if kw.lower() in lower_text]
+    matched = [kw for kw in all_kw if _normalize(kw) in lower_text]
+    missing = [kw for kw in all_kw if _normalize(kw) not in lower_text]
+    any_matched = [kw for kw in any_kw if _normalize(kw) in lower_text]
 
     all_ok = len(missing) == 0
     any_ok = (len(any_kw) == 0) or (len(any_matched) > 0)

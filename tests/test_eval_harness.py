@@ -208,3 +208,13 @@ def test_print_trend_does_not_raise_on_empty_or_populated_history(capsys):
     assert "50.0%" in captured.out
     assert "+25.0%" in captured.out
     assert "swapped model" in captured.out
+
+
+def test_score_question_hyphen_and_space_variants_are_equivalent():
+    question = {"id": "x", "category": "factual_lookup", "must_decline": False,
+                "expected_keypoints": ["60 day"]}
+    assert score_question(question, {"result": "a standard 60-day grace period applies."})["correct"] is True
+
+    question_hyphenated = {"id": "y", "category": "factual_lookup", "must_decline": False,
+                            "expected_keypoints": ["60-day"]}
+    assert score_question(question_hyphenated, {"result": "you get 60 days total."})["correct"] is True

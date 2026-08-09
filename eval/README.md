@@ -136,6 +136,20 @@ to check the answer against retrieved context, meaningfully doubling per-run
 cost). Add these once the current metrics show they're the bottleneck,
 not before.
 
+### Run-to-run noise (why eval defaults to temperature=0)
+
+`run_eval.py` defaults `--temperature` to `0`, *not* the production app's
+`0.2` default. Running the exact same config (model, k, dataset) twice at
+0.2 was observed to flip 2-4 questions between runs purely from sampling
+noise -- e.g. `fact-002` and `elig-005` failed on one run and passed on the
+next, and vice versa for `fact-003`/`elig-001`, with no code change in
+between. An 87.5% vs. 93.8% swing at identical config would look like a
+regression or improvement if you only ran it once each time; it's actually
+noise. Pass `--temperature 0.2` explicitly if you specifically want to
+measure how the model behaves at the production temperature, but treat a
+single such run as unreliable -- average a few runs before concluding
+anything from it.
+
 ### Keeping the dataset honest
 
 `expected_keypoints` were deliberately chosen as stable, long-standing

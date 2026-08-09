@@ -24,8 +24,10 @@
       "category": "factual_lookup",
       "difficulty": "easy",
       "question": "How long is the standard post-completion OPT period for F-1 students?",
-      "expected_keypoints": ["12 month"],
-      "must_decline": false
+      "expected_keypoints": [],
+      "expected_keypoints_any": ["12 month", "12-month", "one full year", "one year"],
+      "must_decline": false,
+      "notes": "expected_keypoints_any covers both phrasings observed in real runs: '12 months' and 'one full year' (same fact, model phrases it either way depending on which chunk it retrieves)."
     },
     {
       "id": "fact-004",
@@ -72,9 +74,10 @@
       "category": "eligibility_multi_condition",
       "difficulty": "medium",
       "question": "I'm on a 12-month post-completion OPT and I've been unemployed for 95 days so far. Am I still maintaining status?",
-      "expected_keypoints": ["90 day", "violat"],
+      "expected_keypoints": ["90 day"],
+      "expected_keypoints_any": ["violat", "auto-terminat", "not maintaining status", "out of status"],
       "must_decline": false,
-      "notes": "Tests whether the model applies the 90-day unemployment cap correctly rather than just retrieving unrelated OPT text."
+      "notes": "Tests whether the model applies the 90-day unemployment cap correctly rather than just retrieving unrelated OPT text. expected_keypoints_any covers real observed phrasings for 'this is a problem' beyond the literal word 'violation'."
     },
     {
       "id": "elig-002",

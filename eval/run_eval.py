@@ -227,7 +227,11 @@ def main():
     parser.add_argument("--note", default="", help="What changed for this run, e.g. 'switched to gpt-4o-mini'")
     parser.add_argument("--model", default="gpt-3.5-turbo", help="Chat model name")
     parser.add_argument("--k", type=int, default=3, help="Retriever search_k")
-    parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument(
+        "--temperature", type=float, default=0.0,
+        help="Defaults to 0 (not the app's production 0.2) for reproducible, comparable eval runs. "
+             "Sampling noise at 0.2 was observed to flip 2-4 questions between identical-config runs.",
+    )
     parser.add_argument("--vector-store-path", default="faiss_index")
     args = parser.parse_args()
 

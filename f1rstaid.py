@@ -192,6 +192,7 @@ Example: 'What documents do I need for STEM OPT extension?'\n
 _EMPTY_QUESTION_RESULT = "Please enter a question about F-1 visas, OPT, or CPT."
 _ERROR_RESULT = "Error processing request. Please try again."
 _DECLINE_MARKER = "🚦 **Relevance Check**"
+_ABSTAIN_MARKER = "don't have enough information"
 _HELP_MARKERS = ("Hello! I'm F1rstAid", "🔍 **How to Ask Effective Questions**")
 
 _ANSWER_BADGES = {
@@ -206,6 +207,11 @@ _ANSWER_BADGES = {
         "Synthesized by an LLM from the retrieved documents below -- verify specifics.",
         "badge-rag",
     ),
+    "abstained": (
+        "🤷 Not enough info",
+        "The retrieved sources didn't contain a confident answer -- nothing below was actually used.",
+        "badge-abstained",
+    ),
     "declined": ("🚦 Off-topic", None, "badge-declined"),
     "help": ("ℹ️ Guidance", None, "badge-help"),
 }
@@ -213,15 +219,27 @@ _ANSWER_BADGES = {
 
 def classify_answer(answer: Dict) -> str:
     """Best-effort classification of which code path produced this answer,
-    for UI presentation only (badge + disclaimer). See module note above.
+    for UI presentation only (badge + disclaimer + whether to show sources).
+    See module note above.
 
     rules_engine answers now carry a fixed citation Document too (not just
     RAG answers), so "has source_documents" alone no longer distinguishes
     them -- each rules_engine citation is tagged metadata["rule_based"]=True
     specifically so this can still tell them apart correctly.
+
+    Checked before the source-based rag/rule branches: the retriever always
+    returns its top-k docs regardless of whether the LLM found them
+    sufficient, so a RAG call that abstains still has non-empty
+    source_documents. Without this check first, an abstention ("I don't
+    have enough information...") got classified as "rag" and rendered with
+    a "🤖 AI-generated from sources" badge, a citation row, and the actual
+    (unused) retrieved docs below it -- implying those sources backed an
+    answer that was never actually given.
     """
     result = (answer.get("result") or "").strip()
     docs = answer.get("source_documents") or []
+    if _ABSTAIN_MARKER in result.lower():
+        return "abstained"
     if docs and all(d.metadata.get("rule_based") for d in docs):
         return "rule"
     if docs:
@@ -257,6 +275,7 @@ APP_CSS = """
 .badge-rag { background-color: #e8f0fe; color: #1a56c4; }
 .badge-declined { background-color: #fdecea; color: #b3261e; }
 .badge-help { background-color: #fff4e5; color: #a05a00; }
+.badge-abstained { background-color: #eaeef2; color: #57606a; }
 
 .source-block {
     /* Background here is a fixed light color regardless of Streamlit's
@@ -688,6 +707,16 @@ class F1rstAidApp:
         answer_type = classify_answer(answer)
         logging.info(f"Answer: {answer['result']} (classified as: {answer_type})")
 
+        # The retriever always returns its top-k docs regardless of whether
+        # the LLM found them sufficient -- an abstained RAG answer still has
+        # non-empty source_documents. Gating here, once, so neither the
+        # Reddit-sourcing note below nor the source cards further down can
+        # imply that unused retrieved docs backed an answer that was never
+        # actually given.
+        displayable_sources = (
+            answer.get("source_documents", []) if answer_type in ("rule", "rag") else []
+        )
+
         st.markdown("### 📝 Answer")
 
         badge = _ANSWER_BADGES.get(answer_type)
@@ -701,7 +730,7 @@ class F1rstAidApp:
 
         formatted_answer = self.format_answer(
             F1rstAidApp.clean_markdown(answer["result"]).strip(),
-            answer.get("source_documents", []),
+            displayable_sources,
         )
         st.markdown(formatted_answer)
 
@@ -717,12 +746,11 @@ class F1rstAidApp:
                 unsafe_allow_html=True,
             )
 
-        source_documents = answer.get("source_documents", [])
-        if source_documents:
+        if displayable_sources:
             official_sources = []
             community_sources = []
 
-            for doc in source_documents:
+            for doc in displayable_sources:
                 if doc.metadata.get("type") == "reddit":
                     community_sources.append(doc)
                 else:

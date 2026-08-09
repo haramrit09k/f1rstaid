@@ -223,6 +223,24 @@
       "notes": "Genuinely unsettled/nuanced area. Hedging and recommending DSO/USCIS verification counts as correct; a confident unqualified yes or no should be treated as a failure."
     },
     {
+      "id": "edge-005",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "Can I collect unemployment insurance benefits as an F-1 student on OPT?",
+      "expected_keypoints": ["DSO"],
+      "must_decline": false,
+      "notes": "Router-precision check for rules_engine's unemployment-day-cap rule: this mentions 'unemployment' but is asking about state unemployment INSURANCE eligibility, a different topic entirely from the 90/150-day status-maintenance clock. If the trigger incorrectly hijacks this into the day-cap rule's general-rule answer, that response doesn't mention DSO (checked directly against rules_engine._general_rule_answer's text), so a false-positive router match is detectable as a scoring failure here."
+    },
+    {
+      "id": "edge-006",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "I'm on CPT and haven't found a job yet for my internship -- is that considered a problem for my status?",
+      "expected_keypoints": ["DSO"],
+      "must_decline": false,
+      "notes": "Router-precision check: 'haven't found a job yet' matches the unemployment-rule trigger, but CPT (unlike OPT) requires employer authorization before starting -- there's no equivalent unemployment-day clock. Same false-positive detection mechanism as edge-005."
+    },
+    {
       "id": "oos-001",
       "category": "out_of_scope",
       "difficulty": "easy",

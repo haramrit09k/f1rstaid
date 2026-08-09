@@ -18,6 +18,8 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from typing import Optional
 
+import rules_engine
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -172,6 +174,7 @@ class F1rstAidApp:
         self.qa_chain = None
         self.embeddings = None
         self.db = None
+        self.llm = None
 
     def initialize(self) -> bool:
         """Initialize the application components."""
@@ -201,11 +204,12 @@ class F1rstAidApp:
                 candidate_pool_size=max(self.config.search_k * 10, 30),
             )
 
+            self.llm = ChatOpenAI(
+                model_name=self.config.model_name,
+                temperature=self.config.temperature,
+            )
             self.qa_chain = RetrievalQA.from_chain_type(
-                llm=ChatOpenAI(
-                    model_name=self.config.model_name,
-                    temperature=self.config.temperature,
-                ),
+                llm=self.llm,
                 retriever=retriever,
                 chain_type="stuff",
                 return_source_documents=True,
@@ -302,6 +306,14 @@ class F1rstAidApp:
                 if any(trigger in clean_q for trigger in entry["triggers"]):
                     logging.info(f"Help question detected: {key}")
                     return {"result": entry["response"], "source_documents": []}
+
+            # Deterministic rules (day-count/logic questions with exact
+            # answers) -- bypasses RAG entirely for questions they match.
+            # Returns None for anything that isn't a match, falling through
+            # to the normal RAG path unchanged.
+            rule_answer = rules_engine.match_and_answer(question, self.llm)
+            if rule_answer is not None:
+                return rule_answer
 
             # LLM relevance analysis
             relevant, explanation = self._is_relevant_question(question)

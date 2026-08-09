@@ -115,6 +115,8 @@ Example: 'What documents do I need for STEM OPT extension?'\n
                 """,
             "triggers": [
                 "ask a question",
+                "ask you a question",
+                "how do i ask",
                 "formulate",
                 "effective questions",
                 "how to ask you",

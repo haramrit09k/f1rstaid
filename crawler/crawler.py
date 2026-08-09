@@ -72,6 +72,19 @@ CHECKPOINT_FILE = "crawler_state.json"  # Checkpoint file for pause/resume.
 # Set to True to resume from a previous checkpoint if available.
 RESUME = True
 
+# Bounds so a single run has a predictable ceiling -- unbounded BFS crawling
+# (no cap existed before) let one site's internal link fan-out (e.g. one
+# USCIS page alone queued 35,555 links) consume the crawl indefinitely,
+# which would blow the weekly workflow's 45-minute timeout on its own even
+# after fixing the separate update_knowledge.py hang. Checkpointing already
+# exists (see save_checkpoint/load_checkpoint), so a run that hits either
+# bound simply picks up where it left off next week rather than losing
+# progress.
+MAX_PAGES_PER_SITE = 300  # per base_url, independent of the time budget
+MAX_TOTAL_CRAWL_SECONDS = 900  # 15 min -- leaves room in the 45 min CI budget
+                                # for update_knowledge.py, URL ingestion, and
+                                # the final commit/push
+
 # ---------------------------
 # HELPER FUNCTIONS
 # ---------------------------
@@ -296,8 +309,14 @@ if __name__ == "__main__":
             state = loaded_state
 
     # Process each website separately.
+    crawl_start_time = time.monotonic()
+    time_budget_exceeded = False
     try:
         for base_url in base_urls:
+            if time_budget_exceeded:
+                logger.info(f"Time budget already exhausted; skipping {base_url} this run.")
+                continue
+
             logger.info(f"Starting crawl for {base_url}")
             domain = urlparse(base_url).netloc
 
@@ -321,6 +340,20 @@ if __name__ == "__main__":
             batch_counter = 0  # Counter to trigger batch saving
 
             while to_visit:
+                if len(visited) >= MAX_PAGES_PER_SITE:
+                    logger.info(
+                        f"Reached MAX_PAGES_PER_SITE ({MAX_PAGES_PER_SITE}) for {base_url}, "
+                        f"{len(to_visit)} URLs still queued for next run."
+                    )
+                    break
+                if time.monotonic() - crawl_start_time > MAX_TOTAL_CRAWL_SECONDS:
+                    logger.info(
+                        f"Reached MAX_TOTAL_CRAWL_SECONDS ({MAX_TOTAL_CRAWL_SECONDS}s); "
+                        f"stopping mid-{base_url}, remaining sites deferred to next run."
+                    )
+                    time_budget_exceeded = True
+                    break
+
                 url = to_visit.pop(0)
                 if url in visited:
                     logger.debug(f"Already visited {url}, skipping.")

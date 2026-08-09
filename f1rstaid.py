@@ -20,6 +20,12 @@ from typing import Optional
 
 import rules_engine
 
+# Picks up OPENAI_API_KEY (and anything else) from a local .env if present,
+# so the app works without the user having to export it manually into the
+# shell before running `streamlit run` -- the sidebar text_input is still
+# the primary path and always wins if a key is entered there.
+load_dotenv()
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +92,15 @@ QA_PROMPT = PromptTemplate(
 # resurfaces official sources by discounting Reddit's effective distance.
 SOURCE_TYPE_WEIGHTS = {"pdf": 2.0, "web": 2.2, "reddit": 0.5}
 DEFAULT_SOURCE_WEIGHT = 1.0
+
+# A few starter questions so a first-time visitor isn't staring at a blank
+# input box -- there's no other onboarding in this app.
+EXAMPLE_QUESTIONS = [
+    "How many days of unemployment am I allowed on OPT?",
+    "What is the 60-day grace period after I graduate?",
+    "Does cap-gap extend my work authorization?",
+    "What documents do I need for a STEM OPT extension?",
+]
 
 
 class SourceWeightedRetriever(BaseRetriever):
@@ -164,6 +179,180 @@ Example: 'What documents do I need for STEM OPT extension?'\n
             ],
         },
     }
+
+
+# --- Answer classification for UI presentation -----------------------------
+# get_answer() doesn't tag which code path produced a given answer, and we
+# can't change its return shape (that's backend/rules_engine territory). So
+# this infers the type purely from what's already observable: an empty
+# source_documents list plus which (if any) of the app's own known
+# boilerplate strings the result matches. This is UI-only best-effort
+# classification, used solely to pick a badge/disclaimer -- never to change
+# behavior.
+_EMPTY_QUESTION_RESULT = "Please enter a question about F-1 visas, OPT, or CPT."
+_ERROR_RESULT = "Error processing request. Please try again."
+_DECLINE_MARKER = "🚦 **Relevance Check**"
+_HELP_MARKERS = ("Hello! I'm F1rstAid", "🔍 **How to Ask Effective Questions**")
+
+_ANSWER_BADGES = {
+    # (label, tooltip, css class)
+    "rule": (
+        "⚡ Instantly calculated",
+        "Computed directly from stated F-1 rules -- no AI involved in this answer.",
+        "badge-rule",
+    ),
+    "rag": (
+        "🤖 AI-generated from sources",
+        "Synthesized by an LLM from the retrieved documents below -- verify specifics.",
+        "badge-rag",
+    ),
+    "declined": ("🚦 Off-topic", None, "badge-declined"),
+    "help": ("ℹ️ Guidance", None, "badge-help"),
+}
+
+
+def classify_answer(answer: Dict) -> str:
+    """Best-effort classification of which code path produced this answer,
+    for UI presentation only (badge + disclaimer). See module note above."""
+    result = (answer.get("result") or "").strip()
+    if answer.get("source_documents"):
+        return "rag"
+    if result == _EMPTY_QUESTION_RESULT:
+        return "empty"
+    if result == _ERROR_RESULT:
+        return "error"
+    if _DECLINE_MARKER in result:
+        return "declined"
+    if any(marker in result for marker in _HELP_MARKERS):
+        return "help"
+    # No sources and none of the known boilerplate templates match -> the
+    # deterministic rules_engine path (exact, computed, zero LLM synthesis).
+    return "rule"
+
+
+# Injected once per script run (see main()) rather than once per source
+# block, which is what the old code did -- format_sources() used to embed
+# a full <style> tag in its return value and got called twice per answer
+# (once for official sources, once for Reddit), duplicating the CSS.
+APP_CSS = """
+<style>
+.answer-badge {
+    display: inline-block;
+    font-size: 0.8em;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 12px;
+    margin: 4px 0 12px 0;
+}
+.badge-rule { background-color: #e6f4ea; color: #1e7e34; }
+.badge-rag { background-color: #e8f0fe; color: #1a56c4; }
+.badge-declined { background-color: #fdecea; color: #b3261e; }
+.badge-help { background-color: #fff4e5; color: #a05a00; }
+
+.source-block {
+    background-color: #ffffff;
+    border: 1px solid #e1e4e8;
+    margin: 12px 0;
+    padding: 16px 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+.source-block h4 {
+    color: #0366d6;
+    margin: 0 0 12px 0;
+    border-bottom: 2px solid #0366d6;
+    padding-bottom: 5px;
+}
+.source-content {
+    margin-left: 10px;
+}
+.preview-box {
+    background-color: #f6f8fa;
+    padding: 10px;
+    border-radius: 5px;
+    margin-top: 10px;
+}
+.preview-text {
+    font-family: monospace;
+    font-size: 0.9em;
+    line-height: 1.4;
+    white-space: pre-wrap;
+}
+.source-block a {
+    color: #0366d6;
+    text-decoration: none;
+    padding: 2px 4px;
+    border-radius: 3px;
+    background-color: #f1f8ff;
+    word-break: break-all;
+}
+.source-block a:hover {
+    text-decoration: underline;
+    background-color: #e1e4e8;
+}
+.source-reddit { border-left: 3px solid #ff4500; }
+.source-official { border-left: 3px solid #0366d6; }
+
+.disclaimer-box {
+    font-size: 0.85em;
+    color: #6a737d;
+    background-color: #f6f8fa;
+    border-left: 3px solid #d0d7de;
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin: 8px 0 20px 0;
+}
+
+.citation-row {
+    font-size: 0.85em;
+    color: #57606a;
+    margin: 4px 0 16px 0;
+}
+.citation-chip {
+    display: inline-block;
+    min-width: 1.4em;
+    text-align: center;
+    margin: 0 2px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    background-color: #f1f8ff;
+    color: #0366d6;
+    text-decoration: none;
+    font-weight: 600;
+}
+.citation-chip:hover {
+    background-color: #dbedff;
+    text-decoration: none;
+}
+
+/* Keep long/unbroken source URLs and code from forcing horizontal scroll
+   on narrow (mobile) viewports. */
+.source-block, .preview-text {
+    overflow-wrap: anywhere;
+}
+
+.site-footer {
+    text-align: center;
+    background: linear-gradient(to right, #f8f9fa, #ffffff, #f8f9fa);
+    padding: 15px;
+    border-top: 1px solid #eee;
+    margin-top: 24px;
+}
+.site-footer span {
+    font-size: 14px;
+    color: #666;
+}
+.site-footer a {
+    text-decoration: none;
+    font-weight: 500;
+}
+
+@media (max-width: 640px) {
+    .source-block { padding: 12px 14px; }
+    .source-content { margin-left: 4px; }
+}
+</style>
+"""
 
 
 class F1rstAidApp:
@@ -411,12 +600,24 @@ class F1rstAidApp:
         return text.strip()
 
     @staticmethod
-    def format_sources(docs: List[Document]) -> str:
-        """Format source documents for display with enhanced metadata and links."""
+    def format_sources(docs: List[Document], start_index: int = 1) -> str:
+        """Format source documents for display with enhanced metadata and
+        links. Styling lives in the module-level APP_CSS, injected once per
+        script run in main() -- this only builds the markup.
+
+        start_index lets numbering stay continuous when official and
+        community sources are rendered as two separate calls (see
+        display_answer) -- otherwise both groups would restart at "Source 1",
+        which wouldn't match the citation numbers shown under the answer.
+        Each block also gets an id='source-N' anchor so those citation
+        numbers can link straight down to the matching card.
+        """
         sources = []
-        for i, doc in enumerate(docs, 1):
+        for offset, doc in enumerate(docs):
+            i = start_index + offset
             source = doc.metadata.get("source", "Unknown")
             doc_type = doc.metadata.get("type", "unknown")
+            block_class = "source-reddit" if doc_type == "reddit" else "source-official"
 
             # 1) Grab raw content snippet
             raw_preview = doc.page_content[:200].replace("\n", " ").strip()
@@ -426,7 +627,7 @@ class F1rstAidApp:
             preview = escape(preview)
 
             source_block = [
-                f"<div class='source-block'>",
+                f"<div class='source-block {block_class}' id='source-{i}'>",
                 f"<h4>Source {i}</h4>",
                 f"<div class='source-content'>",
                 f"<p><strong>Type:</strong> {doc_type.upper()}</p>",
@@ -440,62 +641,7 @@ class F1rstAidApp:
             ]
             sources.append("\n".join(source_block))
 
-        # css = "<style>.source-block{background-color:#ffffff;border:1px solid #e1e4e8;margin:15px 0;padding:20px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.05);}.source-block h4{color:#0366d6;margin:0 0 15px 0;border-bottom:2px solid #0366d6;padding-bottom:5px;}.source-content{margin-left:10px;}.preview-box{background-color:#f6f8fa;padding:10px;border-radius:5px;margin-top:10px;}.preview-text{font-family:monospace;font-size:0.9em;line-height:1.4;white-space:pre-wrap;}a{color:#0366d6;text-decoration:none;padding:2px 4px;border-radius:3px;background-color:#f1f8ff;}a:hover{text-decoration:underline;background-color:#e1e4e8;}</style>"
-
-        css = """
-        <style>
-        .source-block {
-            background-color: #ffffff;
-            border: 1px solid #e1e4e8;
-            margin: 15px 0;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-        }
-        .source-block h4 {
-            color: #0366d6;
-            margin: 0 0 15px 0;
-            border-bottom: 2px solid #0366d6;
-            padding-bottom: 5px;
-        }
-        .source-content {
-            margin-left: 10px;
-        }
-        .preview-box {
-            background-color: #f6f8fa;
-            padding: 10px;
-            border-radius: 5px;
-            margin-top: 10px;
-        }
-        .preview-text {
-            font-family: monospace;
-            font-size: 0.9em;
-            line-height: 1.4;
-            white-space: pre-wrap;
-        }
-        a {
-            color: #0366d6;
-            text-decoration: none;
-            padding: 2px 4px;
-            border-radius: 3px;
-            background-color: #f1f8ff;
-        }
-        a:hover {
-            text-decoration: underline;
-            background-color: #e1e4e8;
-        }
-        .source-reddit {
-            border-left: 3px solid #ff4500;  /* Reddit orange */
-        }
-        .source-official {
-            border-left: 3px solid #0366d6;  /* Official blue */
-        }
-        </style>
-        """
-        clean_css = F1rstAidApp.clean_markdown(
-            css
-        )  # Clean CSS to avoid markdown issues, especially """ blocks
-        return clean_css + "\n\n\n\n".join(sources)
+        return "\n\n\n\n".join(sources)
 
     @staticmethod
     def _sort_by_source_priority(docs: List[Document]) -> List[Document]:
@@ -520,38 +666,84 @@ class F1rstAidApp:
 
     def display_answer(self, answer: Dict):
         """Display formatted answer and sources."""
+        answer_type = classify_answer(answer)
+        logging.info(f"Answer: {answer['result']} (classified as: {answer_type})")
+
         st.markdown("### 📝 Answer")
-        logging.info(f"Answer: {answer['result']}")
+
+        badge = _ANSWER_BADGES.get(answer_type)
+        if badge:
+            label, tooltip, css_class = badge
+            title_attr = f" title='{escape(tooltip)}'" if tooltip else ""
+            st.markdown(
+                f"<span class='answer-badge {css_class}'{title_attr}>{label}</span>",
+                unsafe_allow_html=True,
+            )
+
         formatted_answer = self.format_answer(
             F1rstAidApp.clean_markdown(answer["result"]).strip(),
             answer.get("source_documents", []),
         )
         st.markdown(formatted_answer)
 
-        if "source_documents" in answer:
+        # A substantive answer (computed or AI-generated) is where a
+        # not-legal-advice reminder actually matters -- skip it for
+        # off-topic declines, help text, etc. where it'd just be noise.
+        if answer_type in ("rule", "rag"):
             st.markdown(
-                "### 📚 Source Documents",
-                help="ℹ️ PDF links will open in default PDF viewer",
+                "<div class='disclaimer-box'>⚖️ This is not legal advice. "
+                "Immigration rules and individual circumstances vary -- "
+                "please confirm your specific situation with your DSO or "
+                "an immigration attorney.</div>",
+                unsafe_allow_html=True,
             )
+
+        source_documents = answer.get("source_documents", [])
+        if source_documents:
             official_sources = []
             community_sources = []
 
-            for doc in answer["source_documents"]:
+            for doc in source_documents:
                 if doc.metadata.get("type") == "reddit":
                     community_sources.append(doc)
                 else:
                     official_sources.append(doc)
 
+            # Citation chips right under the answer, numbered to match the
+            # source cards below -- so "which of these sources backed this"
+            # is a click instead of a scroll-and-guess. The QA_PROMPT
+            # already asks the model to name sources in prose (e.g. "Per
+            # USCIS..."); this doesn't change that, it just gives the
+            # existing source list a jump-to-anchor from the top.
+            total = len(official_sources) + len(community_sources)
+            chip_links = " ".join(
+                f"<a class='citation-chip' href='#source-{i}'>{i}</a>"
+                for i in range(1, total + 1)
+            )
+            st.markdown(
+                f"<div class='citation-row'>📎 Cited sources: {chip_links}</div>",
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                "### 📚 Source Documents",
+                help="ℹ️ PDF links will open in default PDF viewer",
+            )
+
             if official_sources:
                 st.markdown("#### Official Sources")
                 st.markdown(
-                    self.format_sources(official_sources), unsafe_allow_html=True
+                    self.format_sources(official_sources, start_index=1),
+                    unsafe_allow_html=True,
                 )
 
             if community_sources:
                 st.markdown("#### Community Experiences (Reddit)")
                 st.markdown(
-                    self.format_sources(community_sources), unsafe_allow_html=True
+                    self.format_sources(
+                        community_sources, start_index=len(official_sources) + 1
+                    ),
+                    unsafe_allow_html=True,
                 )
 
 
@@ -573,14 +765,8 @@ def process_query(question: str):
             return
 
         st.session_state.processing = True
-        st.session_state.cancel_query = False
 
         with st.spinner("🔍 Researching your question..."):
-            # Check for cancellation
-            if st.session_state.cancel_query:
-                st.warning("Query cancelled by user.")
-                return
-
             answer = app.get_answer(question)
 
             if answer and "result" in answer:
@@ -629,10 +815,34 @@ def main():
     """Main application entry point."""
     try:
         # Setup Streamlit UI
+        st.markdown(APP_CSS, unsafe_allow_html=True)
         st.title("🎓 F1rstAid: Your F-1 Visa Helper")
-        
+        st.caption(
+            "An unofficial assistant for F-1 student visa questions -- "
+            "not a substitute for advice from your DSO or an immigration attorney."
+        )
+
         # API Key Input Section
         with st.sidebar:
+            with st.expander("ℹ️ About F1rstAid", expanded=False):
+                st.markdown(
+                    """
+**What this is:** A RAG-based assistant over official F-1 guidance
+(USCIS/DHS/Study in the States) plus Reddit community experiences, with a
+few exact, rule-based answers (like OPT unemployment-day limits and the
+60-day grace period) computed directly instead of guessed by an LLM.
+
+**What this isn't:** Legal advice. Immigration rules change and individual
+cases vary -- always confirm anything important with your DSO or a
+qualified immigration attorney before acting on it.
+
+**Tips:**
+- Mention specifics (dates, form numbers, your OPT phase) for a sharper answer.
+- Official sources are weighted above Reddit posts, but Reddit answers are
+  still shown separately when relevant -- read them as anecdotes, not policy.
+                    """
+                )
+
             st.markdown("### 🔑 OpenAI API Key")
             api_key = st.text_input(
                 "Enter your OpenAI API key:",
@@ -644,6 +854,12 @@ def main():
             if api_key:
                 set_api_key(api_key)
                 st.success("✅ API key set successfully!")
+            elif get_api_key():
+                # A key is already available from a local .env or a prior
+                # session-state set (e.g. loaded via load_dotenv() at import
+                # time) -- the manual field being empty just means the user
+                # hasn't (re-)typed one, not that no key exists.
+                st.info("✅ Using API key from environment.")
             else:
                 st.warning("⚠️ Please enter your OpenAI API key to continue")
                 return
@@ -664,8 +880,6 @@ def main():
         # Initialize session state
         if "processing" not in st.session_state:
             st.session_state.processing = False
-        if "cancel_query" not in st.session_state:
-            st.session_state.cancel_query = False
         if "question_history" not in st.session_state:
             st.session_state.question_history = []
         
@@ -677,7 +891,25 @@ def main():
                 return
                 
             st.write("Ask me anything about F-1 visas!")
-            
+
+            # Clickable example questions -- there's no other onboarding
+            # here, so a first-time visitor otherwise faces a blank input.
+            # Clicking one just fills the question box (via session_state,
+            # set below before the text_input widget is created); it does
+            # not auto-submit, so no API call happens until the user
+            # confirms with "Get Answer".
+            if not st.session_state.processing:
+                st.caption("Not sure where to start? Try one of these:")
+                chip_cols = st.columns(len(EXAMPLE_QUESTIONS))
+                for i, example in enumerate(EXAMPLE_QUESTIONS):
+                    with chip_cols[i]:
+                        if st.button(example, key=f"example_{i}", use_container_width=True):
+                            st.session_state["_pending_example"] = example
+                            st.rerun()
+
+            if "_pending_example" in st.session_state:
+                st.session_state["question_input"] = st.session_state.pop("_pending_example")
+
             # Create two columns for input and button
             col1, col2 = st.columns([4, 1])
             
@@ -698,17 +930,18 @@ def main():
                     use_container_width=True
                 )
 
-            # Add cancel button in session state
-            if "processing" not in st.session_state:
-                st.session_state.processing = False
-            
-            if st.session_state.processing:
-                if st.button("⚠️ Cancel Query", type="secondary"):
-                    st.session_state.cancel_query = True
-                    st.session_state.processing = False
-                    st.rerun()
+            # (No "Cancel Query" button here: Streamlit runs the script
+            # synchronously, so process_query()'s try/finally always resets
+            # st.session_state.processing back to False before the app ever
+            # yields control back for a new click -- a cancel button in that
+            # window is structurally unreachable, not just currently unused.
+            # It looked functional but never was; removed rather than kept
+            # as UI that lies about what it can do.)
 
-            if submit_button or (question and st.session_state.get('enter_pressed', False)):
+            # Enter-key submission is already handled by handle_enter() via
+            # the question_input's on_change above -- this only needs to
+            # cover the explicit button click.
+            if submit_button:
                 process_query(question)
 
             # Display question history with timestamps
@@ -724,22 +957,24 @@ def main():
             st.error("Please provide an OpenAI API key to use F1rstAid")
             return
 
-        # Add styled footer
+        # Styled footer. Deliberately laid out in normal document flow
+        # (not position: fixed) -- a fixed footer on a narrow/mobile
+        # viewport, or once the page has more content than fits one
+        # screen, ends up overlapping the last bit of real content
+        # instead of sitting below it.
         st.markdown("---")
         st.markdown(
             """
-            <div style='position: fixed; bottom: 0; width: 100%; text-align: center; 
-                        background: linear-gradient(to right, #f8f9fa, #ffffff, #f8f9fa);
-                        padding: 15px; border-top: 1px solid #eee;'>
-                <span style='font-size: 14px; color: #666;'>
-                    Built with ❤️ by 
-                    <a href='https://github.com/haramrit09k' target='_blank' 
-                        style='text-decoration: none; color: #0366d6; font-weight: 500;'>
+            <div class='site-footer'>
+                <span>
+                    Built with ❤️ by
+                    <a href='https://github.com/haramrit09k' target='_blank'
+                        style='color: #0366d6;'>
                         @haramrit09k
                     </a>
                     <span style='margin: 0 8px;'>|</span>
                     <a href='https://linkedin.com/in/haramrit09k' target='_blank'
-                        style='text-decoration: none; color: #0077b5; font-weight: 500;'>
+                        style='color: #0077b5;'>
                         LinkedIn
                     </a>
                 </span>

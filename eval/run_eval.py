@@ -85,8 +85,14 @@ def score_question(question: dict, answer: dict, latency_ms: float = None) -> di
     }
 
     if question.get("must_decline"):
-        correct = declined
-        detail = "declined as expected" if correct else "did NOT decline an out-of-scope question"
+        # Either refusal path counts: the explicit relevance-gate decline, or
+        # a RAG-layer abstain (e.g. a question that shares an in-vocabulary
+        # keyword with an F-1 topic -- like "grace period" -- but is
+        # actually off-topic, so it passes the keyword gate and correctly
+        # finds no supporting context instead). Both are safe non-answers;
+        # only a confident wrong answer is the failure mode this guards.
+        correct = declined or abstained
+        detail = "declined/abstained as expected" if correct else "did NOT decline an out-of-scope question"
         return {**base, "correct": correct, "detail": detail, "matched_keypoints": [], "missing_keypoints": []}
 
     if declined:

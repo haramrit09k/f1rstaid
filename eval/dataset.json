@@ -241,6 +241,33 @@
       "notes": "Router-precision check: 'haven't found a job yet' matches the unemployment-rule trigger, but CPT (unlike OPT) requires employer authorization before starting -- there's no equivalent unemployment-day clock. Same false-positive detection mechanism as edge-005."
     },
     {
+      "id": "edge-007",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "Is there a grace period for paying my credit card bill late?",
+      "expected_keypoints": [],
+      "must_decline": true,
+      "notes": "Router-precision check for rules_engine's grace-period rule: 'grace period' is a generic phrase used in an unrelated (billing) sense here. If the trigger incorrectly hijacks this into the F-1 grace-period general-rule answer, that response mentions the F-1-specific '60-day' rule and doesn't decline, so a false-positive router match is detectable as a scoring failure here."
+    },
+    {
+      "id": "edge-008",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "I'm on OPT and got an H-1B job offer, but haven't filed a petition yet -- is there a cap-gap for that?",
+      "expected_keypoints": ["DSO"],
+      "must_decline": false,
+      "notes": "Router-precision check for rules_engine's cap-gap rule: mentions 'cap-gap' and H-1B, but no petition has actually been filed, so the cap-gap extension doesn't apply yet. Same false-positive detection mechanism as edge-005/006/007."
+    },
+    {
+      "id": "edge-009",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "Where on my I-20 can I find my program's CIP code so I know it's printed correctly?",
+      "expected_keypoints": ["I-20"],
+      "must_decline": false,
+      "notes": "Router-precision check for rules_engine's STEM Designated Degree List rule: mentions 'CIP code' (a trigger phrase) but the question is about locating/verifying the code on the I-20, not about STEM OPT eligibility. Same false-positive detection mechanism as edge-005/006/007/008."
+    },
+    {
       "id": "oos-001",
       "category": "out_of_scope",
       "difficulty": "easy",

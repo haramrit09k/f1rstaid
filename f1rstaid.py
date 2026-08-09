@@ -764,6 +764,20 @@ def process_query(question: str):
             st.warning("Please enter a question.")
             return
 
+        # get_cached_app() is @st.cache_resource-keyed by API key, so this
+        # returns the same already-initialized instance main() built --
+        # cheap, not a re-init. Fetched here rather than relying on main()'s
+        # local `app` variable being visible as a global: it never was (no
+        # `global app` declaration), so every call to process_query() was
+        # hitting a real NameError on `app`, caught by the except below and
+        # shown to the user as a generic "error occurred" -- i.e. the
+        # submit button has never actually worked. Fixed by not depending
+        # on implicit global state here at all.
+        app = get_cached_app(get_api_key())
+        if app is None:
+            st.error("Application isn't initialized. Please check your API key.")
+            return
+
         st.session_state.processing = True
 
         with st.spinner("🔍 Researching your question..."):

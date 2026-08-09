@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain.chains import RetrievalQA
 from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from typing import Optional
@@ -72,6 +73,40 @@ QA_PROMPT = PromptTemplate(
         "Answer:"
     ),
 )
+
+# Applied at query time (see SourceWeightedRetriever), not ingest time.
+# ingest.py's rerank_documents() applies these same weights once when
+# building the index, which has no effect on FAISS's similarity ranking at
+# query time -- plain cosine/L2 similarity search ranks purely by embedding
+# distance, and casually-phrased Reddit posts often embed *closer* to a
+# casually-phrased user question than formally-worded official policy text
+# does, even though the official source is more authoritative. This
+# resurfaces official sources by discounting Reddit's effective distance.
+SOURCE_TYPE_WEIGHTS = {"pdf": 2.0, "web": 2.2, "reddit": 0.5}
+DEFAULT_SOURCE_WEIGHT = 1.0
+
+
+class SourceWeightedRetriever(BaseRetriever):
+    """Retrieves a wider candidate pool via similarity search, then re-ranks
+    by source-type weight before truncating to k."""
+
+    db: FAISS
+    k: int = 3
+    candidate_pool_size: int = 30
+
+    class Config:
+        arbitrary_types_allowed = True
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        candidates = self.db.similarity_search_with_score(query, k=self.candidate_pool_size)
+
+        def adjusted_distance(doc_and_score):
+            doc, distance = doc_and_score
+            weight = SOURCE_TYPE_WEIGHTS.get(doc.metadata.get("type"), DEFAULT_SOURCE_WEIGHT)
+            return distance / weight
+
+        ranked = sorted(candidates, key=adjusted_distance)
+        return [doc for doc, _ in ranked[: self.k]]
 
 
 @dataclass
@@ -155,9 +190,15 @@ class F1rstAidApp:
             )
 
             logging.info("Setting up retriever and QA chain...")
-            retriever = self.db.as_retriever(
-                search_type="similarity", 
-                search_kwargs={"k": self.config.search_k}
+            retriever = SourceWeightedRetriever(
+                db=self.db,
+                k=self.config.search_k,
+                # 10 wasn't enough -- verified live that Reddit dominates
+                # the raw candidate pool deeply enough that the first
+                # official (pdf) result didn't appear until rank 20 for a
+                # typical eligibility question. 30 reliably captures at
+                # least one official source to weight up.
+                candidate_pool_size=max(self.config.search_k * 10, 30),
             )
 
             self.qa_chain = RetrievalQA.from_chain_type(

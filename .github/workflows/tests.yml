@@ -1,0 +1,35 @@
+name: Tests
+
+# Runs on every push/PR to main so a broken change is caught before it
+# merges, not discovered by manually running pytest (which is how every
+# regression this project has hit so far was actually found).
+#
+# Deliberately excludes tests marked @pytest.mark.live -- those hit real
+# OpenAI/Reddit APIs and cost real credits/quota. Running them on every
+# push would mean every commit, every PR, every force-push spends money
+# automatically -- the opposite of what this project's rate-limiting work
+# is for. Live tests are for a developer to run locally (`pytest -m live`)
+# with their own credentials before merging something that touches the
+# LLM/retrieval/scraping paths; see pytest.ini for the marker definition.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # matches .python-version (the Heroku deploy runtime)
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests (excludes @pytest.mark.live -- see pytest.ini)
+        run: pytest -m "not live" -q

@@ -21,6 +21,7 @@ def test_content_validation(mock_documents):
     )
     assert processor.validate_content(invalid_doc) is False
 
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_reddit_scraping():
     """Test Reddit content scraping."""

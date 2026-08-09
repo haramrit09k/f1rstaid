@@ -268,6 +268,7 @@ def test_get_answer_uses_condensed_question_for_downstream_routing():
     assert "90" in result["result"]
 
 
+@pytest.mark.live
 def test_initialize(app_config):
     """Test application initialization."""
     app = F1rstAidApp(app_config)
@@ -288,6 +289,7 @@ def test_relevance_check(app_config):
     relevant, _ = app._is_relevant_question("What's the weather like today?")
     assert relevant is False
 
+@pytest.mark.live
 def test_get_answer(app_config):
     """Test answer generation."""
     app = F1rstAidApp(app_config)

@@ -1,9 +1,11 @@
+import pytest
 from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 
 from ingest import ContentProcessor
 from update_knowledge import append_to_vector_store
 
+@pytest.mark.live
 def test_vector_store_update(tmp_path, mock_documents):
     """Test vector store updating in an isolated tmp index -- must never touch
     the real faiss_index/ used by the running app."""

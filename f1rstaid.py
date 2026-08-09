@@ -795,13 +795,28 @@ class F1rstAidApp:
 
 
 def handle_enter():
-    """Handle Enter key press in text input."""
+    """Handle Enter key press in the question input.
+
+    This is an on_change callback -- Streamlit runs callbacks in a separate
+    pre-render pass *before* the main script body executes, so any st.*
+    rendering calls made from here (which process_query() does: spinner,
+    success message, display_answer()) land outside the normal script
+    layout, often rendering at the top of the page instead of where the
+    input box actually is. Reported live: this only happened on Enter-key
+    submission, never on the "Get Answer" button click -- exactly the
+    signature of this bug, since the button's process_query() call runs
+    from the main script body in the right place, not from a callback.
+
+    Fixed by having the callback only flip a flag; main()'s normal script
+    flow (right after the input/button section, same place the button
+    branch already renders from) is what actually calls process_query().
+    """
     if (
-        "question_input" in st.session_state 
-        and st.session_state.question_input 
+        "question_input" in st.session_state
+        and st.session_state.question_input
         and not st.session_state.processing
     ):
-        process_query(st.session_state.question_input)
+        st.session_state["_enter_submitted"] = True
 
 
 def process_query(question: str):
@@ -999,10 +1014,12 @@ qualified immigration attorney before acting on it.
             # It looked functional but never was; removed rather than kept
             # as UI that lies about what it can do.)
 
-            # Enter-key submission is already handled by handle_enter() via
-            # the question_input's on_change above -- this only needs to
-            # cover the explicit button click.
-            if submit_button:
+            # Both the button click and an Enter-key press (which only sets
+            # the _enter_submitted flag in handle_enter()'s callback, not
+            # this call itself) land here -- process_query() always runs
+            # from the main script body's normal layout position, never
+            # from inside a callback. See handle_enter()'s docstring.
+            if submit_button or st.session_state.pop("_enter_submitted", False):
                 process_query(question)
 
             # Display question history with timestamps

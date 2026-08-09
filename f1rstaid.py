@@ -213,9 +213,18 @@ _ANSWER_BADGES = {
 
 def classify_answer(answer: Dict) -> str:
     """Best-effort classification of which code path produced this answer,
-    for UI presentation only (badge + disclaimer). See module note above."""
+    for UI presentation only (badge + disclaimer). See module note above.
+
+    rules_engine answers now carry a fixed citation Document too (not just
+    RAG answers), so "has source_documents" alone no longer distinguishes
+    them -- each rules_engine citation is tagged metadata["rule_based"]=True
+    specifically so this can still tell them apart correctly.
+    """
     result = (answer.get("result") or "").strip()
-    if answer.get("source_documents"):
+    docs = answer.get("source_documents") or []
+    if docs and all(d.metadata.get("rule_based") for d in docs):
+        return "rule"
+    if docs:
         return "rag"
     if result == _EMPTY_QUESTION_RESULT:
         return "empty"
@@ -225,8 +234,8 @@ def classify_answer(answer: Dict) -> str:
         return "declined"
     if any(marker in result for marker in _HELP_MARKERS):
         return "help"
-    # No sources and none of the known boilerplate templates match -> the
-    # deterministic rules_engine path (exact, computed, zero LLM synthesis).
+    # No sources and none of the known boilerplate templates match -- treat
+    # as a rule answer defensively (matches the old fallback behavior).
     return "rule"
 
 

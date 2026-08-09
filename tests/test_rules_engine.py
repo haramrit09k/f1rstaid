@@ -26,6 +26,17 @@ from rules_engine import (
 )
 
 
+def assert_has_rule_citation(result):
+    """Every rules_engine answer now carries exactly one fixed, verified
+    citation Document (see rules_engine._citation) instead of an empty
+    source_documents list -- this checks that shape without pinning the
+    exact citation text, so tests stay focused on their own branch."""
+    docs = result["source_documents"]
+    assert len(docs) == 1
+    assert docs[0].metadata.get("rule_based") is True
+    assert docs[0].metadata.get("source", "").startswith("https://")
+
+
 class FakeExtractor:
     def __init__(self, result):
         self._result = result
@@ -131,7 +142,7 @@ def test_match_and_answer_no_days_stated_gives_general_rule():
     )
     assert result is not None
     assert "90" in result["result"]
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_days_stated_but_phase_missing_asks_clarifying_question():
@@ -142,7 +153,7 @@ def test_match_and_answer_days_stated_but_phase_missing_asks_clarifying_question
     )
     assert result is not None
     assert "initial" in result["result"].lower() or "stem" in result["result"].lower()
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_complete_fields_computes_answer():
@@ -153,7 +164,7 @@ def test_match_and_answer_complete_fields_computes_answer():
     )
     assert result is not None
     assert "exceeds" in result["result"].lower()
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_trigger_hit_but_extraction_says_not_applicable_falls_through():
@@ -226,7 +237,7 @@ def test_match_and_answer_grace_period_no_date_gives_general_rule():
     )
     assert result is not None
     assert "60-day" in result["result"]
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_grace_period_with_date_computes_answer():
@@ -238,7 +249,7 @@ def test_match_and_answer_grace_period_with_date_computes_answer():
     )
     assert result is not None
     assert "July 14" in result["result"]
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_grace_period_false_positive_falls_through():
@@ -296,7 +307,7 @@ def test_match_and_answer_cap_gap_no_facts_gives_general_rule():
     )
     assert result is not None
     assert "September 30" in result["result"]
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_cap_gap_false_positive_falls_through():
@@ -370,7 +381,7 @@ def test_match_and_answer_degree_list_not_on_list():
     )
     assert result is not None
     assert "STEM Designated Degree Program List" in result["result"]
-    assert result["source_documents"] == []
+    assert_has_rule_citation(result)
 
 
 def test_match_and_answer_degree_list_no_facts_gives_general_rule():

@@ -24,9 +24,62 @@ was chosen first and what's deferred to follow-up rules.
 import calendar
 import logging
 from datetime import date, timedelta
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
+from langchain_core.documents import Document
 from pydantic import BaseModel, Field
+
+
+def _citation(source: str, snippet: str) -> Document:
+    """A fixed, verified source backing a rule -- attached to that rule's
+    answers so the UI can show a citation exactly like a RAG answer's, even
+    though no retrieval happened. Each of these was checked against a real,
+    already-ingested document (not invented from memory -- a bad citation is
+    worse than none for a legal-adjacent tool) via a direct FAISS query, and
+    the URL and regulation citation confirmed present in that document's
+    actual text before being hardcoded here. `rule_based=True` is what
+    f1rstaid.py's classify_answer() checks to tell these apart from a real
+    RAG answer's retrieved sources -- everything else about the metadata
+    (type="web") deliberately matches a normal source so the existing
+    source-card rendering needs no special-casing.
+    """
+    return Document(
+        page_content=snippet,
+        metadata={"source": source, "type": "web", "rule_based": True},
+    )
+
+
+# Verified via direct FAISS queries against the ingested index (see the
+# rules_engine backend-fixes session): each URL is a real, already-scraped
+# official source, and each regulation citation is quoted verbatim from that
+# source's actual ingested text, not recalled from memory.
+_UNEMPLOYMENT_CITATION = _citation(
+    "https://studyinthestates.dhs.gov/sevis-help-hub/student-records/fm-student-employment/f-1-optional-practical-training-opt",
+    "DHS: governing regulation is 8 CFR 214.2(f)(10) through (13). SEVIS "
+    "auto-terminates a student's record after 90 consecutive days of "
+    "unemployment during initial OPT (150 days aggregate once on the STEM "
+    "OPT extension).",
+)
+_GRACE_PERIOD_CITATION = _citation(
+    "https://travel.state.gov/content/travel/en/us-visas/study/student-visa.html",
+    "U.S. Department of State: \"Foreign students in the United States "
+    "with F-1 visas must depart the United States within 60 days after "
+    "the program end date listed on Form I-20, including any authorized "
+    "practical training.\"",
+)
+_CAP_GAP_CITATION = _citation(
+    "https://studyinthestates.dhs.gov/sevis-help-hub/student-records/fm-status/f-1-cap-gap-extension",
+    "DHS: governing regulation is 8 CFR 214.2(f)(5)(vi). Students whose "
+    "F-1 status ends between April 1 and September 30 with a timely-filed "
+    "change-of-status H-1B petition may qualify for the cap-gap extension.",
+)
+_DEGREE_LIST_CITATION = _citation(
+    "https://studyinthestates.dhs.gov/stem-opt-hub/for-students/students-determining-stem-opt-extension-eligibility",
+    "DHS: \"The qualifying STEM degree needs to be on DHS's STEM "
+    "Designated Degree Program List at the time the student submits their "
+    "application for the STEM OPT extension.\"",
+)
+
 
 # --- Rule family 1: OPT/STEM-OPT unemployment day cap ---------------------
 
@@ -202,7 +255,10 @@ def _match_unemployment(question: str, llm) -> Optional[Dict]:
     # not a request to evaluate a specific situation. Always answerable
     # without asking for anything or inventing a number.
     if fields.unemployment_days_used is None:
-        return {"result": _general_rule_answer(fields.opt_phase), "source_documents": []}
+        return {
+            "result": _general_rule_answer(fields.opt_phase),
+            "source_documents": [_UNEMPLOYMENT_CITATION],
+        }
 
     # A personal day count *was* given, so the user wants their specific
     # situation evaluated -- now the OPT phase actually matters, since the
@@ -215,10 +271,13 @@ def _match_unemployment(question: str, llm) -> Optional[Dict]:
                 "or on the STEM OPT extension? The unemployment cap differs "
                 "(90 days vs. 150 days aggregate)."
             ),
-            "source_documents": [],
+            "source_documents": [_UNEMPLOYMENT_CITATION],
         }
 
-    return {"result": compute_answer(fields), "source_documents": []}
+    return {
+        "result": compute_answer(fields),
+        "source_documents": [_UNEMPLOYMENT_CITATION],
+    }
 
 
 # --- Rule family 2: 60-day grace period ------------------------------------
@@ -352,9 +411,15 @@ def _match_grace_period(question: str, llm) -> Optional[Dict]:
         return None
 
     if fields.end_month is None or fields.end_day is None:
-        return {"result": _general_grace_period_answer(), "source_documents": []}
+        return {
+            "result": _general_grace_period_answer(),
+            "source_documents": [_GRACE_PERIOD_CITATION],
+        }
 
-    return {"result": compute_grace_period_answer(fields), "source_documents": []}
+    return {
+        "result": compute_grace_period_answer(fields),
+        "source_documents": [_GRACE_PERIOD_CITATION],
+    }
 
 
 # --- Rule family 3: H-1B cap-gap extension ---------------------------------
@@ -467,9 +532,15 @@ def _match_cap_gap(question: str, llm) -> Optional[Dict]:
 
     # No personal facts stated at all -- pure "what's the rule" question.
     if fields.filed_on_time is None and fields.petition_denied is None:
-        return {"result": _general_cap_gap_answer(), "source_documents": []}
+        return {
+            "result": _general_cap_gap_answer(),
+            "source_documents": [_CAP_GAP_CITATION],
+        }
 
-    return {"result": compute_cap_gap_answer(fields), "source_documents": []}
+    return {
+        "result": compute_cap_gap_answer(fields),
+        "source_documents": [_CAP_GAP_CITATION],
+    }
 
 
 # --- Rule family 4: STEM Designated Degree Program List eligibility -------
@@ -581,7 +652,10 @@ def _match_degree_list(question: str, llm) -> Optional[Dict]:
     if not fields.applies:
         return None
 
-    return {"result": compute_degree_list_answer(fields), "source_documents": []}
+    return {
+        "result": compute_degree_list_answer(fields),
+        "source_documents": [_DEGREE_LIST_CITATION],
+    }
 
 
 # --- Single entry point -----------------------------------------------------

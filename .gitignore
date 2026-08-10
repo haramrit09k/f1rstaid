@@ -168,6 +168,7 @@ cython_debug/
 # Runtime shared-key usage counter (see shared_key_limit_reached() in
 # f1rstaid.py) -- ephemeral per-deploy state, not source.
 usage_tracker.json
+feedback_issue_tracker.json
 
 # PyCharm
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

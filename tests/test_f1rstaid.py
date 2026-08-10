@@ -9,6 +9,7 @@ import f1rstaid
 from f1rstaid import (
     DAILY_SHARED_KEY_LIMIT,
     FREE_TRIAL_QUERY_LIMIT,
+    MAX_FEEDBACK_ISSUES_PER_DAY,
     AppConfig,
     CONDENSE_HISTORY_TURNS,
     F1rstAidApp,
@@ -16,8 +17,10 @@ from f1rstaid import (
     _answers_pending_clarification,
     _has_reference_word,
     _increment_daily_shared_key_usage,
+    _read_daily_count,
     _read_daily_shared_key_usage,
     classify_answer,
+    create_feedback_issue,
     shared_key_limit_reached,
 )
 from rules_engine import UnemploymentFields
@@ -498,3 +501,117 @@ def test_shared_key_limit_reached_by_daily_cap(monkeypatch, tmp_path):
 
     assert limited is True
     assert "shared free-trial usage limit for today" in message
+
+
+# --- create_feedback_issue: thumbs-down -> GitHub issue, mocked API ---
+
+class _FakeResponse:
+    def __init__(self, status_code, text="", body=None):
+        self.status_code = status_code
+        self.text = text
+        self._body = body
+
+    def json(self):
+        return self._body
+
+
+def test_create_feedback_issue_no_token_configured_does_not_call_api(monkeypatch):
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    calls = []
+    monkeypatch.setattr(f1rstaid.requests, "post", lambda *a, **k: calls.append((a, k)))
+
+    filed = create_feedback_issue("rag", "some answer", ["https://example.com"], "wrong")
+
+    assert filed is False
+    assert calls == []
+
+
+def test_create_feedback_issue_succeeds_and_increments_daily_counter(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    tracker_path = tmp_path / "feedback.json"
+    monkeypatch.setattr(f1rstaid, "FEEDBACK_TRACKER_PATH", tracker_path)
+
+    captured = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        return _FakeResponse(201)
+
+    monkeypatch.setattr(f1rstaid.requests, "post", fake_post)
+
+    filed = create_feedback_issue(
+        "rag", "some answer text", ["https://example.com/source"], "this was wrong"
+    )
+
+    assert filed is True
+    assert _read_daily_count(tracker_path) == 1
+    assert "haramrit09k/f1rstaid" in captured["url"]
+    assert captured["headers"]["Authorization"] == "Bearer fake-token"
+    assert "some answer text" in captured["json"]["body"]
+    assert "this was wrong" in captured["json"]["body"]
+    assert "https://example.com/source" in captured["json"]["body"]
+
+
+def test_create_feedback_issue_never_includes_the_original_question(monkeypatch, tmp_path):
+    """The core privacy requirement: create_feedback_issue() doesn't even
+    accept a question parameter, so there's no way for one to leak into a
+    public issue body -- this just confirms the body is built only from
+    what was actually passed in."""
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setattr(f1rstaid, "FEEDBACK_TRACKER_PATH", tmp_path / "feedback.json")
+    captured = {}
+    monkeypatch.setattr(
+        f1rstaid.requests,
+        "post",
+        lambda url, headers=None, json=None, timeout=None: (
+            captured.update(body=json["body"]) or _FakeResponse(201)
+        ),
+    )
+
+    create_feedback_issue("rule", "the computed answer", [], "unhelpful")
+
+    assert "question is intentionally omitted" in captured["body"]
+
+
+def test_create_feedback_issue_respects_daily_cap(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    tracker_path = tmp_path / "feedback.json"
+    tracker_path.write_text(
+        json.dumps({"date": str(date.today()), "count": MAX_FEEDBACK_ISSUES_PER_DAY})
+    )
+    monkeypatch.setattr(f1rstaid, "FEEDBACK_TRACKER_PATH", tracker_path)
+    calls = []
+    monkeypatch.setattr(f1rstaid.requests, "post", lambda *a, **k: calls.append((a, k)))
+
+    filed = create_feedback_issue("rag", "answer", [], "feedback")
+
+    assert filed is False
+    assert calls == []  # cap enforced before spending an API call
+
+
+def test_create_feedback_issue_handles_non_201_response(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setattr(f1rstaid, "FEEDBACK_TRACKER_PATH", tmp_path / "feedback.json")
+    monkeypatch.setattr(
+        f1rstaid.requests, "post", lambda *a, **k: _FakeResponse(403, text="bad credentials")
+    )
+
+    filed = create_feedback_issue("rag", "answer", [], "feedback")
+
+    assert filed is False
+
+
+def test_create_feedback_issue_handles_request_exception(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setattr(f1rstaid, "FEEDBACK_TRACKER_PATH", tmp_path / "feedback.json")
+
+    def raise_error(*a, **k):
+        raise f1rstaid.requests.RequestException("network error")
+
+    monkeypatch.setattr(f1rstaid.requests, "post", raise_error)
+
+    filed = create_feedback_issue("rag", "answer", [], "feedback")
+
+    assert filed is False

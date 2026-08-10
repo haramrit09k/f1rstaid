@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 import os.path
 
+import requests
 import streamlit as st
 from dotenv import load_dotenv
 from openai import RateLimitError
@@ -268,10 +269,13 @@ DAILY_SHARED_KEY_LIMIT = 50  # total shared-key queries per day, all sessions
 USAGE_TRACKER_PATH = Path("usage_tracker.json")
 
 
-def _read_daily_shared_key_usage() -> int:
+def _read_daily_count(path: Path) -> int:
+    """Generic same-day counter read, shared by the shared-key usage cap
+    and the feedback-issue cap below -- both need the identical
+    read-today's-count-or-zero logic, just against a different file."""
     today = str(date.today())
     try:
-        data = json.loads(USAGE_TRACKER_PATH.read_text())
+        data = json.loads(path.read_text())
         if data.get("date") == today:
             return int(data.get("count", 0))
     except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
@@ -279,14 +283,22 @@ def _read_daily_shared_key_usage() -> int:
     return 0
 
 
-def _increment_daily_shared_key_usage() -> int:
+def _increment_daily_count(path: Path) -> int:
     today = str(date.today())
-    count = _read_daily_shared_key_usage() + 1
+    count = _read_daily_count(path) + 1
     try:
-        USAGE_TRACKER_PATH.write_text(json.dumps({"date": today, "count": count}))
+        path.write_text(json.dumps({"date": today, "count": count}))
     except OSError as e:
-        logging.error(f"Failed to persist daily shared-key usage counter: {e}")
+        logging.error(f"Failed to persist daily counter at {path}: {e}")
     return count
+
+
+def _read_daily_shared_key_usage() -> int:
+    return _read_daily_count(USAGE_TRACKER_PATH)
+
+
+def _increment_daily_shared_key_usage() -> int:
+    return _increment_daily_count(USAGE_TRACKER_PATH)
 
 
 def shared_key_limit_reached() -> Tuple[bool, str]:
@@ -312,6 +324,78 @@ def shared_key_limit_reached() -> Tuple[bool, str]:
         )
 
     return False, ""
+
+
+# --- Thumbs-down feedback -> GitHub issue -----------------------------------
+#
+# Same daily-cap shape as the shared-key usage limit above, for the same
+# reason: without a cap, a burst of downvotes on one broken answer (e.g.
+# many visitors hitting the same router false-positive) would file a wall
+# of near-duplicate issues instead of one signal worth acting on.
+GITHUB_FEEDBACK_REPO = "haramrit09k/f1rstaid"
+MAX_FEEDBACK_ISSUES_PER_DAY = 10
+FEEDBACK_TRACKER_PATH = Path("feedback_issue_tracker.json")
+
+
+def create_feedback_issue(
+    answer_type: str, answer_text: str, sources: List[str], feedback_text: str
+) -> bool:
+    """Files a GitHub issue from a thumbs-down. Returns True only if an
+    issue was actually created -- callers use this to show an honest
+    status ("thanks for the feedback" vs. "flagged for review") rather than
+    claiming an issue was filed when the token's missing, the daily cap is
+    hit, or the API call itself failed.
+
+    The original question is deliberately NOT included in the issue body.
+    This repo is public, and a downvoter's exact question could contain
+    personal specifics (employer name, exact dates, individual
+    circumstances) that shouldn't become permanent and public just because
+    they hit an unhelpful answer. The answer given, its type, the sources
+    it cited, and the student's own feedback text are enough to actually
+    debug from without that risk.
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        logging.info("GITHUB_TOKEN not configured -- feedback not filed as an issue")
+        return False
+
+    if _read_daily_count(FEEDBACK_TRACKER_PATH) >= MAX_FEEDBACK_ISSUES_PER_DAY:
+        logging.info("Daily feedback-issue cap reached -- not filing another issue")
+        return False
+
+    body = (
+        f"**Answer type:** {answer_type}\n\n"
+        f"**Answer given:**\n> {answer_text}\n\n"
+        f"**Sources cited:** {', '.join(sources) if sources else 'none'}\n\n"
+        f"**Student feedback:** {feedback_text.strip() if feedback_text and feedback_text.strip() else '(no comment given)'}\n\n"
+        "_Filed automatically from a \U0001f44e in the app. The original "
+        "question is intentionally omitted -- this repo is public._"
+    )
+
+    try:
+        response = requests.post(
+            f"https://api.github.com/repos/{GITHUB_FEEDBACK_REPO}/issues",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+            },
+            json={
+                "title": f"User feedback: {answer_type} answer flagged as unhelpful",
+                "body": body,
+                "labels": ["user-feedback"],
+            },
+            timeout=10,
+        )
+        if response.status_code == 201:
+            _increment_daily_count(FEEDBACK_TRACKER_PATH)
+            return True
+        logging.error(
+            f"GitHub issue creation failed: {response.status_code} {response.text[:200]}"
+        )
+        return False
+    except requests.RequestException as e:
+        logging.error(f"GitHub issue creation request failed: {e}")
+        return False
 
 
 class SourceWeightedRetriever(BaseRetriever):
@@ -1168,6 +1252,53 @@ def get_cached_app(api_key: str) -> Optional[F1rstAidApp]:
     return app
 
 
+def render_feedback_widget(msg_index: int, answer: Dict):
+    """Thumbs up/down under an assistant message. Thumbs-down reveals an
+    optional comment box; submitting it calls create_feedback_issue().
+    State is keyed by msg_index so re-rendering the same message on a
+    later rerun (the whole history replays every time -- see main()) shows
+    "already recorded" instead of the buttons again, and so widget keys
+    stay unique across the whole conversation.
+    """
+    feedback_given = st.session_state.setdefault("feedback_given", {})
+
+    if msg_index in feedback_given:
+        if feedback_given[msg_index] == "up":
+            st.caption("👍 Thanks for the feedback!")
+        elif st.session_state.get(f"feedback_filed_{msg_index}"):
+            st.caption("👎 Thanks -- this has been flagged for review.")
+        else:
+            st.caption("👎 Thanks for the feedback!")
+        return
+
+    col1, col2, _ = st.columns([1, 1, 10])
+    with col1:
+        if st.button("👍", key=f"thumbs_up_{msg_index}"):
+            feedback_given[msg_index] = "up"
+            st.rerun()
+    with col2:
+        if st.button("👎", key=f"thumbs_down_{msg_index}"):
+            st.session_state[f"show_feedback_form_{msg_index}"] = True
+            st.rerun()
+
+    if st.session_state.get(f"show_feedback_form_{msg_index}"):
+        comment = st.text_area(
+            "What went wrong? (optional)", key=f"feedback_text_{msg_index}"
+        )
+        if st.button("Submit feedback", key=f"submit_feedback_{msg_index}"):
+            sources = [
+                d.metadata.get("source", "")
+                for d in answer.get("source_documents", [])
+            ]
+            filed = create_feedback_issue(
+                classify_answer(answer), answer.get("result", ""), sources, comment
+            )
+            feedback_given[msg_index] = "down"
+            st.session_state[f"feedback_filed_{msg_index}"] = filed
+            st.session_state.pop(f"show_feedback_form_{msg_index}", None)
+            st.rerun()
+
+
 def main():
     """Main application entry point."""
     try:
@@ -1318,10 +1449,11 @@ qualified immigration attorney before acting on it.
             # identically to how it looked the first time, on every rerun.
             # A limit-reached notice (below) has no "answer" dict -- it's
             # not a real app answer, just a plain status message.
-            for msg in st.session_state.messages:
+            for i, msg in enumerate(st.session_state.messages):
                 with st.chat_message(msg["role"]):
                     if msg["role"] == "assistant" and "answer" in msg:
                         app.display_answer(msg["answer"])
+                        render_feedback_widget(i, msg["answer"])
                     else:
                         st.markdown(msg["content"])
 

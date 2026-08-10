@@ -42,6 +42,15 @@ from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
 
+def _normalize_for_trigger_match(text: str) -> str:
+    """Lowercase and strip apostrophes (straight and curly) before trigger
+    matching, so "haven't" and "havent" match the same trigger phrase
+    without needing both spelled out separately -- generalizes the fix
+    rather than patching one phrasing at a time, same principle as the
+    hyphen-normalization fix in eval/run_eval.py's keypoint matching."""
+    return text.strip().lower().replace("'", "").replace("’", "")
+
+
 def _citation(source: str, snippet: str) -> Document:
     """A fixed, verified source backing a rule -- attached to that rule's
     answers so the UI can show a citation exactly like a RAG answer's, even
@@ -114,6 +123,13 @@ _UNEMPLOYMENT_TRIGGERS = [
     "haven't found a job",
     "without a job",
     "jobless",
+    # Broadened after a real miss: "havent worked in like 80 days" matched
+    # none of the above -- none of them mention "work" at all, only more
+    # formal synonyms for unemployment. This is at least as common a real
+    # phrasing as "unemployed" itself.
+    "haven't worked",
+    "not worked",
+    "no work",
 ]
 
 UNEMPLOYMENT_CAP_DAYS = {
@@ -181,8 +197,8 @@ class UnemploymentFields(BaseModel):
 
 
 def _is_trigger_match(question: str) -> bool:
-    clean_q = question.strip().lower()
-    return any(t in clean_q for t in _UNEMPLOYMENT_TRIGGERS)
+    clean_q = _normalize_for_trigger_match(question)
+    return any(_normalize_for_trigger_match(t) in clean_q for t in _UNEMPLOYMENT_TRIGGERS)
 
 
 def extract_fields(question: str, llm) -> UnemploymentFields:
@@ -361,8 +377,8 @@ class GracePeriodFields(BaseModel):
 
 
 def _is_grace_period_trigger_match(question: str) -> bool:
-    clean_q = question.strip().lower()
-    return any(t in clean_q for t in _GRACE_PERIOD_TRIGGERS)
+    clean_q = _normalize_for_trigger_match(question)
+    return any(_normalize_for_trigger_match(t) in clean_q for t in _GRACE_PERIOD_TRIGGERS)
 
 
 def extract_grace_period_fields(question: str, llm) -> GracePeriodFields:
@@ -485,8 +501,8 @@ class CapGapFields(BaseModel):
 
 
 def _is_cap_gap_trigger_match(question: str) -> bool:
-    clean_q = question.strip().lower()
-    return any(t in clean_q for t in _CAP_GAP_TRIGGERS)
+    clean_q = _normalize_for_trigger_match(question)
+    return any(_normalize_for_trigger_match(t) in clean_q for t in _CAP_GAP_TRIGGERS)
 
 
 def extract_cap_gap_fields(question: str, llm) -> CapGapFields:
@@ -612,8 +628,8 @@ class DegreeListFields(BaseModel):
 
 
 def _is_degree_list_trigger_match(question: str) -> bool:
-    clean_q = question.strip().lower()
-    return any(t in clean_q for t in _DEGREE_LIST_TRIGGERS)
+    clean_q = _normalize_for_trigger_match(question)
+    return any(_normalize_for_trigger_match(t) in clean_q for t in _DEGREE_LIST_TRIGGERS)
 
 
 def extract_degree_list_fields(question: str, llm) -> DegreeListFields:
@@ -748,8 +764,8 @@ class AddressChangeFields(BaseModel):
 
 
 def _is_address_change_trigger_match(question: str) -> bool:
-    clean_q = question.strip().lower()
-    return any(t in clean_q for t in _ADDRESS_CHANGE_TRIGGERS)
+    clean_q = _normalize_for_trigger_match(question)
+    return any(_normalize_for_trigger_match(t) in clean_q for t in _ADDRESS_CHANGE_TRIGGERS)
 
 
 def extract_address_change_fields(question: str, llm) -> AddressChangeFields:

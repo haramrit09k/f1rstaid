@@ -13,6 +13,8 @@ from f1rstaid import (
     CONDENSE_HISTORY_TURNS,
     F1rstAidApp,
     RelevanceFields,
+    _answers_pending_clarification,
+    _has_reference_word,
     _increment_daily_shared_key_usage,
     _read_daily_shared_key_usage,
     classify_answer,
@@ -142,7 +144,67 @@ def test_relevance_check_no_llm_set_falls_back_to_keyword_match():
     assert relevant is True
 
 
-# --- condense_question: pure logic against a fake LLM, no API calls ---
+# --- condense_question: two deterministically-picked mechanisms, not one
+# LLM call that both judges and rewrites -- that combined approach was
+# tried first and verified live to be unreliable (see condense_question's
+# docstring). Tests below cover each mechanism, and the routing between
+# them, separately. ---
+
+# --- _answers_pending_clarification: pure logic, no LLM involved ---
+
+def test_answers_pending_clarification_true_for_short_answer_to_a_question():
+    history = [
+        {"role": "user", "content": "I've been unemployed for 95 days, am I okay?"},
+        {"role": "assistant", "content": "Are you on initial OPT or the STEM extension?"},
+    ]
+    assert _answers_pending_clarification("I'm on initial OPT", history) is True
+
+
+def test_answers_pending_clarification_false_when_assistant_did_not_ask_a_question():
+    history = [
+        {"role": "user", "content": "How long is the STEM OPT extension?"},
+        {"role": "assistant", "content": "The STEM OPT extension is 24 months."},
+    ]
+    assert _answers_pending_clarification("What form do I need for that?", history) is False
+
+
+def test_answers_pending_clarification_false_when_followup_is_a_full_new_question():
+    """The exact real bug this guards against: a follow-up arriving right
+    after a clarifying question, but which is actually a new, unrelated,
+    full question rather than a short direct answer to it."""
+    history = [
+        {"role": "user", "content": "I haven't worked in 80 days, is that bad?"},
+        {"role": "assistant", "content": "Are you on initial OPT or the STEM extension?"},
+    ]
+    assert (
+        _answers_pending_clarification("on f1 opt can i invest in a roth ira", history)
+        is False
+    )
+
+
+def test_answers_pending_clarification_false_with_insufficient_history():
+    assert _answers_pending_clarification("I'm on initial OPT", []) is False
+    assert (
+        _answers_pending_clarification(
+            "I'm on initial OPT", [{"role": "assistant", "content": "Which phase?"}]
+        )
+        is False
+    )
+
+
+# --- _has_reference_word: pure logic ---
+
+def test_has_reference_word_detects_that_even_with_trailing_punctuation():
+    """Real bug caught live: naive space-padded substring matching missed
+    "that?" because of the trailing question mark."""
+    assert _has_reference_word("What form do I need for that?") is True
+
+
+def test_has_reference_word_false_for_unrelated_question():
+    assert _has_reference_word("How long is the STEM OPT extension?") is False
+
+
+# --- condense_question: routing between the two mechanisms ---
 
 def test_condense_question_no_history_returns_original_without_calling_llm():
     app = F1rstAidApp(AppConfig())
@@ -152,27 +214,57 @@ def test_condense_question_no_history_returns_original_without_calling_llm():
     result = app.condense_question("What about STEM OPT?", [])
 
     assert result == "What about STEM OPT?"
-    assert fake_llm.last_prompt is None  # never called -- no history to condense from
+    assert fake_llm.last_prompt is None
 
 
-def test_condense_question_rewrites_using_history():
+def test_condense_question_pending_clarification_concatenates_without_calling_llm():
+    """The highest-stakes path (feeds straight into rules_engine's exact
+    day-math) uses plain string concatenation, not LLM composition --
+    proven here by giving it an LLM that would raise if called at all."""
     app = F1rstAidApp(AppConfig())
-    fake_llm = _FakeChatLLM(
-        "I used 60 days of unemployment on initial OPT -- how many days do I "
-        "have left if I move to the STEM OPT extension?"
-    )
-    app.llm = fake_llm
+    app.llm = _FakeChatLLM(raise_error=True)
     history = [
-        {"role": "user", "content": "I used 60 days of unemployment on initial OPT"},
-        {"role": "assistant", "content": "You have 30 days remaining..."},
+        {"role": "user", "content": "I've been unemployed for 95 days, am I okay?"},
+        {"role": "assistant", "content": "Are you on initial OPT or the STEM extension?"},
     ]
 
-    result = app.condense_question("What about STEM OPT?", history)
+    result = app.condense_question("I'm on initial OPT", history)
+
+    assert "95 days" in result
+    assert "initial OPT" in result
+
+
+def test_condense_question_reference_word_rewrites_using_history():
+    app = F1rstAidApp(AppConfig())
+    fake_llm = _FakeChatLLM("What form do I need for the STEM OPT extension?")
+    app.llm = fake_llm
+    history = [
+        {"role": "user", "content": "How long is the STEM OPT extension?"},
+        {"role": "assistant", "content": "The STEM OPT extension is 24 months."},
+    ]
+
+    result = app.condense_question("What form do I need for that?", history)
 
     assert "STEM OPT" in result
     assert fake_llm.last_prompt is not None
-    assert "60 days" in fake_llm.last_prompt  # history text reached the prompt
-    assert "What about STEM OPT?" in fake_llm.last_prompt  # so did the follow-up
+    assert "24 months" in fake_llm.last_prompt  # history text reached the prompt
+
+
+def test_condense_question_no_reference_word_and_no_pending_clarification_is_unchanged():
+    """Same shape as the real Roth IRA bug: history exists, but this
+    follow-up neither answers a pending clarifying question nor references
+    the conversation -- must stay unchanged, no LLM call."""
+    app = F1rstAidApp(AppConfig())
+    fake_llm = _FakeChatLLM(raise_error=True)
+    app.llm = fake_llm
+    history = [
+        {"role": "user", "content": "I haven't worked in 80 days, is that bad?"},
+        {"role": "assistant", "content": "You have used 80 of your 90 allowed days..."},
+    ]
+
+    result = app.condense_question("on f1 opt can i invest in a roth ira", history)
+
+    assert result == "on f1 opt can i invest in a roth ira"
 
 
 def test_condense_question_bounds_history_to_recent_turns():
@@ -186,7 +278,7 @@ def test_condense_question_bounds_history_to_recent_turns():
         for i in range(total_turns)
     ]
 
-    app.condense_question("follow-up", history)
+    app.condense_question("what about that?", history)
 
     prompt = fake_llm.last_prompt
     assert "turn-0" not in prompt  # earliest turns excluded
@@ -196,11 +288,14 @@ def test_condense_question_bounds_history_to_recent_turns():
 def test_condense_question_falls_back_to_original_on_llm_failure():
     app = F1rstAidApp(AppConfig())
     app.llm = _FakeChatLLM(raise_error=True)
-    history = [{"role": "user", "content": "..."}]
+    history = [
+        {"role": "user", "content": "How long is the STEM OPT extension?"},
+        {"role": "assistant", "content": "The STEM OPT extension is 24 months."},
+    ]
 
-    result = app.condense_question("What about STEM OPT?", history)
+    result = app.condense_question("what about that?", history)
 
-    assert result == "What about STEM OPT?"
+    assert result == "what about that?"
 
 
 # --- get_answer(chat_history=...): condensation wiring, no API calls ---

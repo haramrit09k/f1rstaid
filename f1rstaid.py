@@ -138,15 +138,81 @@ QA_PROMPT = PromptTemplate(
 # depends on anything more than a couple of turns back.
 CONDENSE_HISTORY_TURNS = 6  # 3 user/assistant exchanges
 
+# Reference words that mean a follow-up is pointing back at the
+# conversation ("what form do I need for THAT?"). Checked with word
+# boundaries, not bare substring, so e.g. "this" doesn't false-positive on
+# an unrelated word that happens to contain it.
+_CONDENSE_REFERENCE_WORDS = ["that", "it", "this", "those", "these", "the same", "same as"]
+
+# A follow-up this short, arriving right after the assistant asked a
+# clarifying question, is almost certainly a direct answer to it ("I'm on
+# initial OPT", "stem opt") rather than a new, independent question -- a
+# genuinely new question is essentially never this short. Verified live
+# this distinguishes the two cases that matter: "I'm on initial OPT" (4
+# words) and "stem opt" (2 words) are direct answers; "on f1 opt can i
+# invest in a roth ira" (9 words) is not, even though it also arrived right
+# after a clarifying question about OPT phase.
+_DIRECT_ANSWER_WORD_LIMIT = 6
+
+
+def _answers_pending_clarification(question: str, chat_history: List[Dict]) -> bool:
+    """True if the assistant's last message was a clarifying question and
+    this follow-up looks like a short, direct answer to it -- the
+    highest-confidence, highest-stakes case (it feeds straight into
+    rules_engine's exact day-math), so it's detected deterministically
+    rather than by asking an LLM to judge it. See condense_question()'s
+    docstring for why LLM composition isn't used for this case either."""
+    if len(chat_history) < 2:
+        return False
+    last, prior = chat_history[-1], chat_history[-2]
+    return (
+        last.get("role") == "assistant"
+        and "?" in (last.get("content") or "")
+        and prior.get("role") == "user"
+        and len(question.split()) <= _DIRECT_ANSWER_WORD_LIMIT
+    )
+
+
+def _has_reference_word(question: str) -> bool:
+    """True if the follow-up uses a word like 'that'/'it'/'this' that could
+    be pointing back at the conversation (e.g. 'what form do I need for
+    THAT?'). A much lower-stakes signal than
+    _answers_pending_clarification -- feeds only into an LLM composition
+    call for the RAG path, not a hard-coded arithmetic rule, so occasional
+    imperfection here is tolerable in a way it isn't for the day-math case.
+
+    Uses a real word-boundary regex, not space-padded substring matching --
+    verified live that the naive version missed "what form do I need for
+    THAT?" because the trailing "?" meant "that?" never matched " that "
+    padded with plain spaces on both sides.
+    """
+    clean_q = question.strip().lower()
+    return any(re.search(rf"\b{re.escape(w)}\b", clean_q) for w in _CONDENSE_REFERENCE_WORDS)
+
+
+# Only ever invoked after _has_reference_word() has already decided (in
+# code, not by asking the LLM) that this follow-up points back at the
+# conversation -- so this prompt's only job is composing the merged
+# question, not judging whether merging is warranted. Splitting judgment
+# from composition like this, rather than asking one call to do both, is
+# what actually fixed the unreliability -- see condense_question()'s
+# docstring for what was tried first.
 CONDENSE_PROMPT = PromptTemplate(
     input_variables=["chat_history", "question"],
     template=(
-        "Given the conversation so far and a follow-up question, rewrite "
-        "the follow-up as a standalone question that includes every fact "
-        "from the conversation needed to answer it on its own -- dates, "
-        "day counts, which OPT phase, or anything else the student already "
-        "stated. Do not answer the question yourself. If the follow-up is "
-        "already standalone, return it unchanged.\n\n"
+        "This follow-up question depends on the conversation below to be "
+        "understood on its own -- either it's a direct answer to a "
+        "clarifying question the assistant just asked, or it uses a word "
+        "like 'that'/'it'/'this' referring back to something already "
+        "discussed. Rewrite it as a standalone question that includes "
+        "every fact from the conversation needed to answer it -- dates, "
+        "day counts, which OPT phase, or whatever else was already "
+        "stated. Do not answer the question yourself, only rewrite it.\n\n"
+        "Example: assistant asked 'are you on initial OPT or the STEM "
+        "extension?' after the student said they'd used 80 of their "
+        "unemployment days; follow-up is 'I'm on initial OPT.' -> 'I've "
+        "used 80 of my unemployment days and I'm on initial OPT -- how "
+        "many days do I have left?'\n\n"
         "Conversation so far:\n{chat_history}\n\n"
         "Follow-up question: {question}\n\n"
         "Standalone question:"
@@ -716,12 +782,39 @@ class F1rstAidApp:
         history itself. This is what turns "what about STEM OPT?" into
         something rules_engine or the retriever can actually act on.
 
-        Falls back to the original question on any failure (a bad rewrite,
-        or the LLM call itself failing) -- condensation is an enhancement,
-        never something that should be the reason a question goes
-        unanswered.
+        Two different mechanisms, picked deterministically rather than by
+        asking one LLM call to both judge and rewrite in one shot -- that
+        combined approach was tried first and verified unreliable across
+        several prompt iterations: it either injected an earlier turn's
+        facts into a genuinely new, unrelated question (an F-1 unemployment
+        question got merged into an unrelated Roth IRA question, which then
+        got answered as if it were about unemployment days), or failed to
+        inject facts into a real follow-up that needed them (a direct
+        answer to the assistant's own clarifying question stopped
+        producing a computed result), or even echoed the assistant's
+        question back instead of merging in the student's answer.
+
+        1. Answering a pending clarifying question (_answers_pending_
+           clarification): plain string concatenation of the question that
+           prompted it plus this answer -- no LLM composition at all. This
+           is the highest-stakes case (feeds straight into rules_engine's
+           exact day-math), so it gets the most reliable possible
+           mechanism rather than trusting a paraphrase.
+        2. A reference word like "that"/"it" pointing back at the
+           conversation (_has_reference_word): LLM composition, since this
+           only feeds the lower-stakes RAG path. Falls back to the original
+           question on any failure -- condensation is an enhancement,
+           never something that should be the reason a question goes
+           unanswered.
+        3. Neither applies: return the question unchanged, no LLM call.
         """
-        if not chat_history:
+        if _answers_pending_clarification(question, chat_history):
+            prior_question = chat_history[-2].get("content", "")
+            merged = f"{prior_question.rstrip('?.! ')}. {question.rstrip('.! ')}."
+            logging.info(f"Concatenated clarifying-question answer: {question!r} -> {merged!r}")
+            return merged
+
+        if not chat_history or not _has_reference_word(question):
             return question
 
         recent = chat_history[-CONDENSE_HISTORY_TURNS:]

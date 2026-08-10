@@ -183,3 +183,27 @@ isn't worth the investment without a specific reason to want gpt-4o-mini
 revisit this if latency becomes a priority). Don't re-run this comparison
 without either new eval questions or a specific hypothesis for why the
 outcome would differ.
+
+## Prompt-injection resistance (tested 2026-08-09/10)
+
+Manually tested 7 realistic injection/jailbreak patterns against the live
+pipeline before adding any eval coverage (instruction override, roleplay/
+persona jailbreak, fake "SYSTEM OVERRIDE" framing, direct prompt-leak
+requests, and a request to fabricate a citation) -- all 7 were handled
+safely with no prompt changes needed. Three representative ones are now
+permanent eval cases (`edge-012`, `edge-013`, `oos-005`).
+
+Why this held up without any hardening work: the QA_PROMPT's "use ONLY the
+given context, abstain if insufficient" framing means there's usually no
+retrieved context that would let the model construct an unqualified false
+claim, regardless of what the injected instruction demands -- the RAG
+"stuff" architecture is naturally more injection-resistant than an open
+agentic system would be, since there's no tool access or privileged
+context to actually hijack. One case was even more structurally protected
+than that: an unemployment-day question with injected "disregard your
+abstention policy" framing got routed to `rules_engine` and answered by
+plain Python, never reaching the LLM's instruction-following at all.
+
+Re-test this if the QA_PROMPT's abstention language changes, or before
+adding any tool/agentic capability that would give a successful injection
+something real to do (this app currently has none).

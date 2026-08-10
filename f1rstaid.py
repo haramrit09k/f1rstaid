@@ -5,7 +5,7 @@ import os
 import re
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 import os.path
@@ -715,6 +715,29 @@ class F1rstAidApp:
             logging.error(f"Initialization failed: {str(e)}")
             return False
 
+    def get_knowledge_base_last_updated(self) -> Optional[str]:
+        """Human-readable freshness date for the currently-loaded index,
+        read from faiss_index/last_updated.json -- written by
+        update_knowledge.py's pipeline on every successful refresh (see
+        _write_last_updated() there). Without this surfaced somewhere,
+        there's no way for a student to know whether yesterday's policy
+        change made it into an answer, or won't until next week's
+        scheduled run -- exactly the freshness-pipeline work earlier this
+        project never had anywhere to actually show up.
+
+        Returns None (never raises) if the file doesn't exist or can't be
+        parsed -- e.g. an isolated test index that was never run through
+        the real pipeline -- callers should treat this as optional context,
+        not something the app depends on.
+        """
+        try:
+            path = Path(self.config.vector_store_path) / "last_updated.json"
+            data = json.loads(path.read_text())
+            dt = datetime.fromisoformat(data["last_updated"])
+            return dt.strftime("%B %d, %Y")
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError, OSError):
+            return None
+
     def get_secret(self, group, key, env_var=None):
         """
         Retrieve a secret from st.secrets first, then fall back to environment variables.
@@ -1394,6 +1417,13 @@ qualified immigration attorney before acting on it.
             if app is None:
                 st.error("Failed to initialize application. Please check your API key.")
                 return
+
+            last_updated = app.get_knowledge_base_last_updated()
+            if last_updated:
+                st.caption(
+                    f"🗓️ Knowledge base last refreshed: {last_updated}. "
+                    "Recent policy changes may not be reflected yet."
+                )
 
             # Clickable example questions -- there's no other onboarding
             # here, so a first-time visitor otherwise faces a blank input.

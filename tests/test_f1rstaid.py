@@ -387,6 +387,30 @@ def test_relevance_check(app_config):
     relevant, _ = app._is_relevant_question("What's the weather like today?")
     assert relevant is False
 
+# --- get_knowledge_base_last_updated: pure file I/O, no API calls ---
+
+def test_get_knowledge_base_last_updated_reads_the_metadata_file(tmp_path):
+    (tmp_path / "last_updated.json").write_text(
+        json.dumps({"last_updated": "2026-08-09T07:07:47+00:00"})
+    )
+    app = F1rstAidApp(AppConfig(vector_store_path=str(tmp_path)))
+
+    result = app.get_knowledge_base_last_updated()
+
+    assert result == "August 09, 2026"
+
+
+def test_get_knowledge_base_last_updated_missing_file_returns_none(tmp_path):
+    app = F1rstAidApp(AppConfig(vector_store_path=str(tmp_path)))
+    assert app.get_knowledge_base_last_updated() is None
+
+
+def test_get_knowledge_base_last_updated_corrupt_file_returns_none(tmp_path):
+    (tmp_path / "last_updated.json").write_text("not valid json{{{")
+    app = F1rstAidApp(AppConfig(vector_store_path=str(tmp_path)))
+    assert app.get_knowledge_base_last_updated() is None
+
+
 @pytest.mark.live
 def test_get_answer(app_config):
     """Test answer generation."""

@@ -1,6 +1,8 @@
 import asyncio
+import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List
 
 import aiohttp
@@ -38,6 +40,27 @@ RSS_FEEDS = [
 ]
 
 
+def _write_last_updated(vector_store_path: str) -> None:
+    """Records when the index was actually last refreshed, inside
+    faiss_index/ itself so weekly-update.yml's existing `git add
+    faiss_index/` picks it up automatically -- no separate commit step
+    needed. f1rstaid.py reads this to show students how fresh the answers
+    actually are, instead of leaving that invisible (a real gap: the
+    freshness-pipeline fix earlier this project never had anywhere to
+    actually show up to the person using the app).
+
+    Called multiple times per pipeline run (once per source type) -- each
+    call just overwrites with the current time, so the file always reflects
+    whenever this run's last successful update happened, which is exactly
+    what "last updated" should mean.
+    """
+    try:
+        path = Path(vector_store_path) / "last_updated.json"
+        path.write_text(json.dumps({"last_updated": datetime.now(timezone.utc).isoformat()}))
+    except OSError as e:
+        logging.error(f"Failed to write last_updated.json: {e}")
+
+
 def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss_index") -> bool:
     """Append new documents to existing vector store."""
     try:
@@ -50,6 +73,7 @@ def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss
         )
         vector_store.add_documents(docs)
         vector_store.save_local(vector_store_path)
+        _write_last_updated(vector_store_path)
         return True
     except Exception as e:
         logging.error(f"Error appending to vector store: {e}")

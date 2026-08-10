@@ -2,25 +2,17 @@
 
 A smart assistant for F-1 students navigating U.S. immigration regulations, powered by AI.
 
+**Live demo**: [f1rstaid-064025a9fcc1.herokuapp.com](https://f1rstaid-064025a9fcc1.herokuapp.com/) — try it free (a few questions on a shared key), or bring your own OpenAI key for unlimited use.
+
 ## 🌟 Features
 
-- **Intelligent Q&A**: Get accurate answers about:
-  - F-1 Visa requirements and maintenance
-  - OPT/CPT applications and regulations
-  - STEM OPT extensions
-  - Employment authorization (Form I-765)
-  - Travel and re-entry procedures
-
-- **Multi-Source Knowledge**:
-  - Official government documents (USCIS, ICE)
-  - University guidelines
-  - Community experiences (Reddit)
-  - Regular updates to stay current
-
-- **Smart Search**: 
-  - Vector-based similarity search using FAISS
-  - OpenAI embeddings for accurate retrieval
-  - Context-aware responses
+- **Deterministic answers where exactness matters**: five rule families (OPT/STEM-OPT unemployment day caps — including exact deadline dates, the 60-day grace period, the H-1B cap-gap extension, STEM Designated Degree List eligibility, and the 10-day SEVIS address-change deadline) are computed in plain Python instead of guessed by an LLM, each backed by a citation verified against a real, already-ingested source — not recalled from memory.
+- **Real conversation memory**: follow-up questions ("what about STEM OPT?", or answering a clarifying question the assistant just asked) are understood in context, without needing to repeat yourself.
+- **Honest about what it doesn't know**: a dedicated abstain state (distinct from "off-topic" and from a computed answer) when retrieved sources don't actually support a confident answer — no answer is better than a wrong one for a legal-adjacent topic.
+- **Multi-source knowledge base**: official government documents (USCIS, DHS/Study in the States), university guidance, and Reddit community experiences (weighted below official sources, shown separately, and refreshed weekly).
+- **Cost-protected**: a shared trial key lets anyone try the app free (rate-limited per session and per day); bringing your own key removes the limit.
+- **User feedback loop**: 👍/👎 on every answer; a 👎 with a comment can file a GitHub issue automatically (rate-limited, and the original question is never included — this repo is public).
+- **Freshness transparency**: the UI shows when the knowledge base was actually last refreshed, so a recent policy change isn't silently assumed to be included.
 
 ## 🗺️ Architecture
 
@@ -31,22 +23,27 @@ flowchart LR
     end
 
     subgraph PerQuestion["Per question"]
-        Q["Student question"] --> R{"Deterministic\nrule match?"}
-        R -- "yes (e.g. day-count caps)" --> D["rules_engine\n(plain Python)"]
-        R -- "no" --> F["FAISS retrieval\n+ gpt-3.5-turbo"]
+        Q["Student question"] --> C{"Follow-up needing\nprior context?"}
+        C -- yes --> M["condense_question()\n(merge with history)"]
+        C -- no --> R
+        M --> R{"Deterministic\nrule match?"}
+        R -- "yes (5 rule families)" --> D["rules_engine\n(plain Python + citation)"]
+        R -- "no" --> G{"On-topic?"}
+        G -- no --> X["Decline"]
+        G -- yes --> F["FAISS retrieval\n+ gpt-3.5-turbo"]
         V -.-> F
         D --> A["Answer"]
         F --> A
     end
 ```
 
-Most questions are answered by retrieval + the LLM. A small set of exact, arithmetic questions (like OPT unemployment day caps) are routed to deterministic Python instead, so the answer is computed rather than guessed. The knowledge base itself refreshes weekly from PDFs, official websites, Reddit, and RSS feeds.
+Most questions are answered by retrieval + the LLM. A narrow set of exact, arithmetic/lookup questions are routed to deterministic Python instead, so the answer is computed and cited rather than guessed. Follow-up questions are first merged with conversation history when needed. The knowledge base itself refreshes weekly from PDFs, official websites, Reddit, and RSS feeds.
 
 ## 🛠️ Installation
 
 1. **Clone the Repository**
 ```bash
-git clone https://github.com/yourusername/f1rstaid.git
+git clone https://github.com/haramrit09k/f1rstaid.git
 cd f1rstaid
 ```
 
@@ -71,6 +68,9 @@ echo "OPENAI_API_KEY=your_key_here" >> .env
 echo "REDDIT_CLIENT_ID=your_client_id" >> .env
 echo "REDDIT_CLIENT_SECRET=your_client_secret" >> .env
 echo "REDDIT_USER_AGENT=f1rstaid:v1.0" >> .env
+
+# Optional: only needed to enable the thumbs-down -> GitHub issue feature
+echo "GITHUB_TOKEN=your_fine_grained_pat" >> .env
 ```
 
 ## 🚀 Usage
@@ -90,20 +90,33 @@ python update_knowledge.py
 python crawler/crawler.py
 ```
 
+## ☁️ Deployment
+
+Deployed on Heroku (`Procfile`, `.python-version`). Weekly knowledge-base refreshes and the test suite both run via GitHub Actions (`.github/workflows/`).
+
+```bash
+git push heroku main
+```
+
 ## 📁 Project Structure
 
 ```
 f1rstaid/
-├── f1rstaid.py          # Main application
-├── ingest.py            # Document processing
-├── update_knowledge.py  # Knowledge base updater
+├── f1rstaid.py           # Streamlit app: chat UI, RAG chain, conversation memory, rate limiting
+├── rules_engine.py       # Deterministic rule families for exact/citable answers
+├── ingest.py             # Document processing
+├── update_knowledge.py   # Knowledge base updater (writes freshness metadata)
 ├── config/
-│   ├── reddit_config.py # Reddit API configuration
-│   └── sources.py       # Source URLs configuration
+│   ├── reddit_config.py  # Reddit API configuration
+│   └── sources.py        # Source URLs configuration
 ├── crawler/
-│   └── crawler.py       # Web crawler
-├── docs/                # PDF documents
-└── logs/                # Application logs
+│   └── crawler.py        # Autonomous URL-discovery web crawler
+├── eval/
+│   ├── dataset.json      # Eval question set (facts, eligibility, timeline math, edge cases)
+│   ├── run_eval.py       # Eval harness -- scores against the live pipeline
+│   └── results/          # Accuracy history over time, tagged to git commits
+├── docs/                 # PDF source documents
+└── .github/workflows/    # CI (tests) + weekly knowledge-base refresh
 ```
 
 ## 📊 Monitoring & Logs
@@ -112,12 +125,28 @@ f1rstaid/
 - **Ingestion Logs**: `ingest.log`
 - **Crawler Logs**: `crawler/logs/crawler.log`
 
+## 📈 Evaluation
+
+An offline eval harness scores the live pipeline against a fixed, categorized question set (factual lookups, multi-condition eligibility, timeline math, adversarial edge cases, out-of-scope questions), tracking accuracy over time against the git commit that produced it.
+
+```bash
+python eval/run_eval.py --label my-change
+```
+
+See `eval/README.md` for methodology, and `eval/results/history.jsonl` for the accuracy trend.
+
 ## 🔧 Development
 
 ### Running Tests
 ```bash
-python -m pytest tests/
+# Fast, free -- excludes tests that hit real external APIs
+python -m pytest -m "not live"
+
+# Full suite, including live API calls (needs real credentials)
+python -m pytest
 ```
+
+See `pytest.ini` for the `live` marker.
 
 ### Code Quality
 ```bash
@@ -127,29 +156,6 @@ ruff check .
 # Format code
 ruff format .
 ```
-
-## 🧪 Testing
-
-### Running Tests
-```bash
-# Install test dependencies
-pip install -r requirements.txt
-
-# Run all tests
-python -m pytest
-
-# Run with coverage report
-python -m pytest --cov=. tests/
-
-# Run specific test file
-python -m pytest tests/test_f1rstaid.py
-```
-
-### Test Structure
-- `test_f1rstaid.py`: Core application tests
-- `test_ingest.py`: Document processing tests
-- `test_crawler.py`: Web crawler tests
-- `test_update_knowledge.py`: Knowledge base update tests
 
 ## 🤝 Contributing
 

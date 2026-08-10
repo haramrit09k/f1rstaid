@@ -2,7 +2,7 @@
 stated facts, not open-ended synthesis -- routed here instead of the RAG/LLM
 path so the answer is exact rather than probabilistic.
 
-Four rule families, each following the same trigger -> extract -> compute
+Five rule families, each following the same trigger -> extract -> compute
 shape:
   - the OPT/STEM-OPT unemployment day cap (90 / 150 aggregate days)
   - the 60-day post-completion/post-OPT grace period (pure date arithmetic)
@@ -15,6 +15,18 @@ shape:
     abstained instead of applying it, an instruction-following limit the
     QA_PROMPT's "apply a stated rule's direct consequence" carve-out was
     meant to cover but didn't reliably trigger on this phrasing)
+  - the 10-day SEVIS address/name-change reporting deadline (pure date
+    arithmetic, same shape as the grace period rule)
+
+A travel-signature-validity rule (12 months for continuing students, 6
+months while on OPT -- a real, common question) was deliberately NOT
+added despite being scoped for the same session: several targeted
+searches against the actual ingested FAISS index found no source stating
+those specific numbers, only adjacent content about OPT validity periods.
+Building it anyway would mean citing a source that doesn't actually say
+what the rule claims -- worse than not having the rule at all for a
+legal-adjacent tool. Left as a known gap; would need a real source
+ingested first (see the config/sources.py list), not just a rule added.
 
 match_and_answer() is the single entry point and tries each family in turn,
 returning the first non-None match. See the project plan for why this rule
@@ -78,6 +90,11 @@ _DEGREE_LIST_CITATION = _citation(
     "DHS: \"The qualifying STEM degree needs to be on DHS's STEM "
     "Designated Degree Program List at the time the student submits their "
     "application for the STEM OPT extension.\"",
+)
+_ADDRESS_CHANGE_CITATION = _citation(
+    "https://studyinthestates.dhs.gov/sevis-help-hub/student-records/fm-student-employment/f-1-optional-practical-training-opt",
+    "DHS: \"...the student must report to the DSO within 10 days any "
+    "changes in the student's name or address...\"",
 )
 
 
@@ -665,6 +682,139 @@ def _match_degree_list(question: str, llm) -> Optional[Dict]:
     }
 
 
+# --- Rule family 5: 10-day SEVIS address/name-change reporting deadline ---
+#
+# Pure date arithmetic, same shape as the grace period rule: 8 CFR
+# 214.2(f)(17) (and the ingested DHS source's own wording) requires F-1
+# students to report a change of name or address to their DSO within 10
+# days of the change.
+
+_ADDRESS_CHANGE_TRIGGERS = [
+    "change of address",
+    "changed my address",
+    "changed address",
+    "new address",
+    "moved to a new address",
+    "report my address",
+    "address change",
+    # Broadened after a real eval miss: "I moved to a new apartment on
+    # March 1" matched none of the address-specific phrases above, so it
+    # never reached this rule at all and fell through to a generic RAG
+    # answer instead of a computed date. "moved"/"moving" is a much looser
+    # trigger (could false-positive on e.g. "I moved from CPT to OPT"), but
+    # that's exactly what the `applies` field below is for -- the trigger
+    # only needs to be cheap and inclusive, not precise.
+    "i moved",
+    "just moved",
+    "moving to a new",
+    "new apartment",
+    "new home",
+]
+
+
+class AddressChangeFields(BaseModel):
+    """The date the address/name change happened. Same month/day/year-
+    Optional shape as GracePeriodFields, for the same reason -- students
+    often give a date without a year."""
+
+    change_month: Optional[int] = Field(
+        default=None,
+        description="Month (1-12) the address or name change happened. Leave null if not stated.",
+    )
+    change_day: Optional[int] = Field(
+        default=None,
+        description="Day of month (1-31) matching change_month. Leave null if not stated.",
+    )
+    change_year: Optional[int] = Field(
+        default=None,
+        description=(
+            "Year the change happened, ONLY if the student explicitly "
+            "stated a year. Leave null otherwise -- never guess a year."
+        ),
+    )
+    # Placed last: see the comment on UnemploymentFields.applies.
+    applies: bool = Field(
+        description=(
+            "True only if this question is about the F-1 requirement to "
+            "report a change of address or legal name to a DSO within a "
+            "specific deadline. Set False for anything else that merely "
+            "mentions 'address' or 'change' in an unrelated sense (e.g. "
+            "changing a mailing address on a bank account or driver's "
+            "license, which has nothing to do with SEVIS/F-1 status). When "
+            "in doubt, set this False so the question is handled by "
+            "general knowledge-base search instead."
+        ),
+    )
+
+
+def _is_address_change_trigger_match(question: str) -> bool:
+    clean_q = question.strip().lower()
+    return any(t in clean_q for t in _ADDRESS_CHANGE_TRIGGERS)
+
+
+def extract_address_change_fields(question: str, llm) -> AddressChangeFields:
+    extractor = llm.with_structured_output(AddressChangeFields)
+    return extractor.invoke(
+        "Extract the date this student's address or name change happened, "
+        "if stated. Never guess a value that isn't clearly present in the "
+        f"question -- leave fields null instead.\n\nQuestion: {question}"
+    )
+
+
+def compute_address_change_answer(fields: AddressChangeFields) -> str:
+    """Pure Python date arithmetic, zero LLM involvement, deterministic --
+    identical shape to compute_grace_period_answer, just a 10-day span
+    instead of 60."""
+    placeholder_year = fields.change_year or 2001
+    start = date(placeholder_year, fields.change_month, fields.change_day)
+    end = start + timedelta(days=10)
+
+    start_str = f"{calendar.month_name[start.month]} {start.day}"
+    end_str = f"{calendar.month_name[end.month]} {end.day}"
+    if fields.change_year:
+        start_str += f", {fields.change_year}"
+        end_str += f", {fields.change_year if end.year == placeholder_year else fields.change_year + 1}"
+
+    return (
+        f"Based on a change date of {start_str}, you must report this to "
+        f"your DSO by {end_str} -- F-1 students have 10 days to report a "
+        "change of address or legal name. Confirm the exact deadline with "
+        "your DSO."
+    )
+
+
+def _general_address_change_answer() -> str:
+    return (
+        "F-1 students must report a change of address or legal name to "
+        "their DSO within 10 days of the change."
+    )
+
+
+def _match_address_change(question: str, llm) -> Optional[Dict]:
+    if not _is_address_change_trigger_match(question):
+        return None
+
+    try:
+        fields = extract_address_change_fields(question, llm)
+    except Exception as e:
+        logging.error(f"rules_engine address-change extraction failed: {e}")
+        return None
+
+    if not fields.applies:
+        return None
+
+    if fields.change_month is None or fields.change_day is None:
+        return {
+            "result": _general_address_change_answer(),
+            "source_documents": [_ADDRESS_CHANGE_CITATION],
+        }
+
+    return {
+        "result": compute_address_change_answer(fields),
+        "source_documents": [_ADDRESS_CHANGE_CITATION],
+    }
+
+
 # --- Single entry point -----------------------------------------------------
 
 def match_and_answer(question: str, llm) -> Optional[Dict]:
@@ -676,6 +826,7 @@ def match_and_answer(question: str, llm) -> Optional[Dict]:
         _match_grace_period,
         _match_cap_gap,
         _match_degree_list,
+        _match_address_change,
     ):
         result = matcher(question, llm)
         if result is not None:

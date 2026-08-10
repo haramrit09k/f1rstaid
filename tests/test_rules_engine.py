@@ -6,18 +6,22 @@ against the real LLM was separately smoke-tested by hand during development
 time-005 transcripts)."""
 
 from rules_engine import (
+    AddressChangeFields,
     CapGapFields,
     DegreeListFields,
     GracePeriodFields,
     UnemploymentFields,
+    _general_address_change_answer,
     _general_cap_gap_answer,
     _general_degree_list_answer,
     _general_grace_period_answer,
     _general_rule_answer,
+    _is_address_change_trigger_match,
     _is_cap_gap_trigger_match,
     _is_degree_list_trigger_match,
     _is_grace_period_trigger_match,
     _is_trigger_match,
+    compute_address_change_answer,
     compute_answer,
     compute_cap_gap_answer,
     compute_degree_list_answer,
@@ -398,6 +402,68 @@ def test_match_and_answer_degree_list_false_positive_falls_through():
     fake_fields = DegreeListFields(applies=False, degree_on_list=None)
     result = match_and_answer(
         "What's the CIP code format supposed to look like on any I-20?",
+        llm=FakeLLM(fake_fields),
+    )
+    assert result is None
+
+
+# --- compute_address_change_answer: pure date arithmetic ---
+
+def test_compute_address_change_no_year_stays_in_same_year():
+    fields = AddressChangeFields(applies=True, change_month=3, change_day=1)
+    result = compute_address_change_answer(fields)
+    assert "March 1" in result
+    assert "March 11" in result  # March 1 + 10 days
+
+
+def test_compute_address_change_wraps_into_next_year():
+    fields = AddressChangeFields(applies=True, change_month=12, change_day=28, change_year=2026)
+    result = compute_address_change_answer(fields)
+    assert "December 28, 2026" in result
+    assert "January 7, 2027" in result
+
+
+# --- address-change trigger matching ---
+
+def test_address_change_trigger_matches():
+    assert _is_address_change_trigger_match("I changed my address last week, what do I do?") is True
+
+
+def test_address_change_trigger_does_not_match_unrelated_question():
+    assert _is_address_change_trigger_match("What form do I use to apply for OPT?") is False
+
+
+# --- match_and_answer: address-change branches ---
+
+def test_match_and_answer_address_change_no_date_gives_general_rule():
+    fake_fields = AddressChangeFields(applies=True, change_month=None, change_day=None)
+    result = match_and_answer(
+        "How many days do I have to report a change of address?",
+        llm=FakeLLM(fake_fields),
+    )
+    assert result is not None
+    assert "10 days" in result["result"]
+    assert_has_rule_citation(result)
+
+
+def test_match_and_answer_address_change_with_date_computes_answer():
+    fake_fields = AddressChangeFields(applies=True, change_month=3, change_day=1)
+    result = match_and_answer(
+        "I moved to a new address on March 1, when do I need to report this to my DSO?",
+        llm=FakeLLM(fake_fields),
+    )
+    assert result is not None
+    assert "March 11" in result["result"]
+    assert_has_rule_citation(result)
+
+
+def test_match_and_answer_address_change_false_positive_falls_through():
+    """Trigger word present ('new address') but extraction correctly judges
+    this isn't about the F-1/SEVIS reporting requirement at all -- must
+    fall through to RAG."""
+    fake_fields = AddressChangeFields(applies=False)
+    result = match_and_answer(
+        "How do I update my new address on my bank account?",
         llm=FakeLLM(fake_fields),
     )
     assert result is None

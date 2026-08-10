@@ -188,6 +188,24 @@
       "must_decline": false
     },
     {
+      "id": "time-007",
+      "category": "timeline_math",
+      "difficulty": "medium",
+      "question": "I moved to a new apartment on March 1. By what date do I need to report this to my DSO?",
+      "expected_keypoints": ["March 11"],
+      "must_decline": false,
+      "notes": "Personalized version of time-006 -- requires computing March 1 + 10 days, not just retrieving the general rule. Added alongside rules_engine's address-change rule. This exact phrasing ('new apartment', not 'change of address') is what first exposed the address-change trigger list being too narrow -- it originally only matched formal phrasings and missed this one entirely, falling through to a generic RAG answer instead of computing a date."
+    },
+    {
+      "id": "time-008",
+      "category": "timeline_math",
+      "difficulty": "medium",
+      "question": "forgot to tell my dso i moved on march 1, am i screwed",
+      "expected_keypoints": ["March 11"],
+      "must_decline": false,
+      "notes": "Realistic, casual, anxious real-world phrasing (not textbook wording) -- kept as a permanent case specifically to guard against the trigger-list-too-narrow failure mode time-007 caught. A real student in this situation is far more likely to type something like this than 'change of address.'"
+    },
+    {
       "id": "edge-001",
       "category": "edge_case",
       "difficulty": "hard",
@@ -266,6 +284,15 @@
       "expected_keypoints": ["I-20"],
       "must_decline": false,
       "notes": "Router-precision check for rules_engine's STEM Designated Degree List rule: mentions 'CIP code' (a trigger phrase) but the question is about locating/verifying the code on the I-20, not about STEM OPT eligibility. Same false-positive detection mechanism as edge-005/006/007/008."
+    },
+    {
+      "id": "edge-010",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "How do I update my new address on my bank account and driver's license?",
+      "expected_keypoints": [],
+      "must_decline": true,
+      "notes": "Router-precision check for rules_engine's address-change rule: mentions 'new address' (a trigger phrase) but is about banking/DMV paperwork, not the F-1/SEVIS 10-day reporting requirement. Same false-positive detection mechanism as edge-005/006/007/008/009."
     },
     {
       "id": "oos-001",

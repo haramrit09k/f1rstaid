@@ -139,11 +139,16 @@ UNEMPLOYMENT_CAP_DAYS = {
 
 
 class UnemploymentFields(BaseModel):
-    """Facts required to answer an unemployment-day-cap question. The two
-    day-count fields are Optional -- the extraction prompt explicitly
+    """Facts required to answer a basic unemployment-day-cap question. The
+    two day-count fields are Optional -- the extraction prompt explicitly
     instructs leaving a field None rather than guessing a value the user
     didn't state, since inventing a day count or phase here would be a
-    hallucination with a hard-coded veneer of certainty."""
+    hallucination with a hard-coded veneer of certainty.
+
+    Deliberately kept to just these three fields. Date/chronology
+    extraction lives in the separate UnemploymentDateFields model below --
+    see its docstring for why they're split rather than one combined
+    schema."""
 
     opt_phase: Optional[str] = Field(
         default=None,
@@ -196,6 +201,73 @@ class UnemploymentFields(BaseModel):
     )
 
 
+class UnemploymentDateFields(BaseModel):
+    """A second, separate extraction call, made only when the question
+    looks date-oriented (see _looks_date_oriented) -- not merged into
+    UnemploymentFields above.
+
+    Verified live: cramming these four fields into UnemploymentFields (7
+    fields total) made gpt-3.5-turbo silently drop the LAST field
+    (`applies`) from its structured-output JSON entirely, on every single
+    call for a previously-reliable question -- a hard pydantic validation
+    crash, not a wrong-but-present value. Same lesson as this session's
+    condensation fix: splitting one overloaded call into two narrower ones
+    fixed it, not more prompt tuning on the combined version.
+    """
+
+    unemployment_start_month: Optional[int] = Field(
+        default=None,
+        description=(
+            "Month (1-12) the student's CURRENT, ongoing stretch of "
+            "unemployment began, only if the question asks for an actual "
+            "deadline/end date (e.g. 'what date can I be unemployed until') "
+            "rather than just a day count. Leave null if not stated."
+        ),
+    )
+    unemployment_start_day: Optional[int] = Field(
+        default=None,
+        description="Day of month (1-31) matching unemployment_start_month. Leave null if not stated.",
+    )
+    unemployment_start_year: Optional[int] = Field(
+        default=None,
+        description=(
+            "Year the current unemployment stretch began, ONLY if the "
+            "student explicitly stated a year. Leave null otherwise -- "
+            "never guess a year."
+        ),
+    )
+    # Placed last, same field-order reasoning as UnemploymentFields.applies.
+    chronology_too_complex: bool = Field(
+        default=False,
+        description=(
+            "True if the question describes MULTIPLE separate periods of "
+            "employment and unemployment (e.g. 'I was unemployed in "
+            "January, then worked until April, then unemployed again from "
+            "June') rather than one clean current stretch. Computing an "
+            "exact total or deadline from a multi-period chronology risks a "
+            "wrong number presented with false confidence -- when this is "
+            "True, the answer should say so honestly instead of attempting "
+            "the math. False for the normal case: one current stretch."
+        ),
+    )
+
+
+# Cheap pre-filter so the second extraction call only fires for questions
+# that plausibly need it -- mirrors every other trigger-list-then-LLM gate
+# in this module. Most unemployment questions are pure day-count ("I've
+# used 95 days") and never need this second call at all.
+_DATE_ORIENTED_WORDS = [
+    "starting", "started", "since", "until", "end date", "deadline",
+    "january", "february", "march", "april", "may", "june", "july",
+    "august", "september", "october", "november", "december",
+]
+
+
+def _looks_date_oriented(question: str) -> bool:
+    clean_q = _normalize_for_trigger_match(question)
+    return any(w in clean_q for w in _DATE_ORIENTED_WORDS)
+
+
 def _is_trigger_match(question: str) -> bool:
     clean_q = _normalize_for_trigger_match(question)
     return any(_normalize_for_trigger_match(t) in clean_q for t in _UNEMPLOYMENT_TRIGGERS)
@@ -208,6 +280,19 @@ def extract_fields(question: str, llm) -> UnemploymentFields:
         "Extract the OPT phase and unemployment days used from this student's "
         "question, if stated. Never guess a value that isn't clearly present "
         f"in the question -- leave fields null instead.\n\nQuestion: {question}"
+    )
+
+
+def extract_unemployment_date_fields(question: str, llm) -> UnemploymentDateFields:
+    extractor = llm.with_structured_output(UnemploymentDateFields)
+    return extractor.invoke(
+        "This question is about F-1 OPT unemployment days. If it asks for "
+        "an actual deadline/end date rather than just a day count, extract "
+        "the start date of the student's current unemployment stretch. "
+        "Also determine whether it describes multiple separate "
+        "employment/unemployment periods rather than one clean stretch. "
+        "Never guess a value that isn't clearly present.\n\n"
+        f"Question: {question}"
     )
 
 
@@ -237,6 +322,79 @@ def compute_answer(fields: UnemploymentFields) -> str:
     )
 
 
+def compute_unemployment_deadline_answer(
+    opt_phase: str, prior_days_used: Optional[int], date_fields: UnemploymentDateFields
+) -> str:
+    """Pure Python date arithmetic, zero LLM involvement, deterministic --
+    same +N-days shape as compute_grace_period_answer/
+    compute_address_change_answer, with a phase-dependent cap and an
+    optional prior-days offset if the student already used some before
+    this stretch began. Takes primitives plus the separate
+    UnemploymentDateFields object rather than one combined model -- see
+    that class's docstring for why the extraction itself is split.
+    """
+    cap = UNEMPLOYMENT_CAP_DAYS[opt_phase]
+    phase_label = (
+        "the initial 12-month post-completion OPT"
+        if opt_phase == "initial_opt"
+        else "the STEM OPT extension period (aggregate across initial OPT and the extension)"
+    )
+    prior_used = prior_days_used or 0
+    remaining = cap - prior_used
+
+    placeholder_year = date_fields.unemployment_start_year or 2001
+    start = date(placeholder_year, date_fields.unemployment_start_month, date_fields.unemployment_start_day)
+    start_str = f"{calendar.month_name[start.month]} {start.day}"
+    if date_fields.unemployment_start_year:
+        start_str += f", {date_fields.unemployment_start_year}"
+
+    # The assumption ("no prior days") is made explicit rather than silent
+    # -- if it's wrong, a silently-wrong deadline is exactly the failure
+    # mode this whole rules engine exists to avoid.
+    caveat = (
+        "" if prior_days_used is not None
+        else " (assuming you haven't used any other unemployment days during this period -- "
+        "let me know if you have, and I can recalculate)"
+    )
+
+    if remaining <= 0:
+        return (
+            f"Based on what you've described, you'd already used {prior_used} of "
+            f"your {cap} allowed unemployment days for {phase_label} before this "
+            f"stretch even started{caveat}. You're already at or over the limit -- "
+            "please contact your DSO immediately to discuss your options."
+        )
+
+    end = start + timedelta(days=remaining)
+    end_str = f"{calendar.month_name[end.month]} {end.day}"
+    if date_fields.unemployment_start_year:
+        end_str += f", {date_fields.unemployment_start_year if end.year == placeholder_year else date_fields.unemployment_start_year + 1}"
+
+    return (
+        f"Starting from {start_str}{caveat}, you can remain unemployed for "
+        f"{remaining} more day{'s' if remaining != 1 else ''} under the {cap}-day "
+        f"cap for {phase_label} -- {end_str} is the last day before you'd exceed "
+        "it. This is a hard cap -- please consult your DSO well before that date."
+    )
+
+
+def _chronology_too_complex_answer() -> str:
+    """A question describing multiple separate employment/unemployment
+    periods needs those periods added up correctly before any cap
+    comparison means anything -- attempting that arithmetic from a
+    free-text chronology risks a wrong total presented with false
+    confidence, so this says so honestly instead of guessing."""
+    return (
+        "It sounds like you've had multiple separate periods of employment "
+        "and unemployment during this OPT period. I can't reliably add "
+        "those up from a description like this -- getting the exact total "
+        "right matters too much to risk a mistake. Please work with your "
+        "DSO to total your unemployment days so far; once you have that "
+        "number (and which OPT phase applies), I can tell you exactly how "
+        "many days you have left, or the exact date you'd need to stop by."
+    )
+
+
 def _general_rule_answer(opt_phase: Optional[str]) -> str:
     """A pure rule-lookup answer (no personal day count needed or invented)."""
     if opt_phase == "initial_opt":
@@ -259,13 +417,25 @@ def _general_rule_answer(opt_phase: Optional[str]) -> str:
     )
 
 
+_UNEMPLOYMENT_PHASE_CLARIFYING_QUESTION = (
+    "I can calculate this for you, but I need to know one more thing: are "
+    "you on your initial 12-month post-completion OPT, or on the STEM OPT "
+    "extension? The unemployment cap differs (90 days vs. 150 days aggregate)."
+)
+
+
 def _match_unemployment(question: str, llm) -> Optional[Dict]:
     """Returns None if this rule doesn't apply (falls through to the
-    existing RAG path), a general-rule answer if no personal day count was
-    given (a pure "what's the rule" question, always safely answerable
-    without guessing), a clarifying-question response if a personal day
-    count was given but the OPT phase wasn't (needed to know which cap
-    applies), or a full computed answer if both are present.
+    existing RAG path). Otherwise, in priority order:
+      1. A multi-period chronology -> an honest "I can't safely add that up"
+         answer, checked first regardless of what else was extracted --
+         guessing a total from a description like that is exactly the
+         failure mode this rule exists to avoid.
+      2. A start date was given (the student wants an actual deadline, not
+         just a day count) -> a clarifying question if the OPT phase is
+         still needed, otherwise a computed deadline date.
+      3. Otherwise, the original day-count-only shape: general rule, a
+         clarifying question, or a computed day-count answer.
     """
     if not _is_trigger_match(question):
         return None
@@ -284,6 +454,43 @@ def _match_unemployment(question: str, llm) -> Optional[Dict]:
     if not fields.applies:
         return None
 
+    # Second extraction call, only when the question plausibly needs it --
+    # see UnemploymentDateFields' docstring for why this is a separate call
+    # rather than more fields on `fields` above. A failure here degrades to
+    # the original day-count-only behavior below, not a lost answer -- this
+    # call is an enhancement, same principle as condense_question().
+    date_fields = None
+    if _looks_date_oriented(question):
+        try:
+            date_fields = extract_unemployment_date_fields(question, llm)
+        except Exception as e:
+            logging.error(f"rules_engine unemployment date extraction failed: {e}")
+
+    if date_fields and date_fields.chronology_too_complex:
+        return {
+            "result": _chronology_too_complex_answer(),
+            "source_documents": [_UNEMPLOYMENT_CITATION],
+        }
+
+    has_start_date = (
+        date_fields is not None
+        and date_fields.unemployment_start_month is not None
+        and date_fields.unemployment_start_day is not None
+    )
+
+    if has_start_date:
+        if fields.opt_phase not in UNEMPLOYMENT_CAP_DAYS:
+            return {
+                "result": _UNEMPLOYMENT_PHASE_CLARIFYING_QUESTION,
+                "source_documents": [_UNEMPLOYMENT_CITATION],
+            }
+        return {
+            "result": compute_unemployment_deadline_answer(
+                fields.opt_phase, fields.unemployment_days_used, date_fields
+            ),
+            "source_documents": [_UNEMPLOYMENT_CITATION],
+        }
+
     # No personal day count stated -- this is a "what's the rule" question,
     # not a request to evaluate a specific situation. Always answerable
     # without asking for anything or inventing a number.
@@ -298,12 +505,7 @@ def _match_unemployment(question: str, llm) -> Optional[Dict]:
     # cap differs (90 vs 150), and guessing it would risk a wrong answer.
     if fields.opt_phase not in UNEMPLOYMENT_CAP_DAYS:
         return {
-            "result": (
-                "I can calculate this for you, but I need to know one more "
-                "thing: are you on your initial 12-month post-completion OPT, "
-                "or on the STEM OPT extension? The unemployment cap differs "
-                "(90 days vs. 150 days aggregate)."
-            ),
+            "result": _UNEMPLOYMENT_PHASE_CLARIFYING_QUESTION,
             "source_documents": [_UNEMPLOYMENT_CITATION],
         }
 

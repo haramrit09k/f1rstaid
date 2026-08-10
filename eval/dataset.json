@@ -206,6 +206,25 @@
       "notes": "Realistic, casual, anxious real-world phrasing (not textbook wording) -- kept as a permanent case specifically to guard against the trigger-list-too-narrow failure mode time-007 caught. A real student in this situation is far more likely to type something like this than 'change of address.'"
     },
     {
+      "id": "time-009",
+      "category": "timeline_math",
+      "difficulty": "hard",
+      "question": "if i was unemployed on my initial OPT starting July 15 2026, what is the end date until which i can be unemployed?",
+      "expected_keypoints": ["October 13, 2026"],
+      "must_decline": false,
+      "notes": "Requires computing July 15 + 90 days = October 13, not just retrieving the 90-day fact. Added alongside rules_engine's unemployment-deadline extension (a second, separate extraction call for date/chronology fields -- see rules_engine.py's UnemploymentDateFields docstring for why it's not merged into the original 3-field extraction)."
+    },
+    {
+      "id": "edge-011",
+      "category": "edge_case",
+      "difficulty": "hard",
+      "question": "I was unemployed in January for 20 days, then worked until May, then got laid off again in June, how many unemployment days do I have left on my initial OPT?",
+      "expected_keypoints": [],
+      "expected_keypoints_any": ["DSO", "add", "total"],
+      "must_decline": false,
+      "notes": "A multi-period chronology -- correct behavior is declining to compute an exact total/deadline from free text (risk of a wrong number with false confidence) and directing the student to total their days with their DSO first, not silently guessing a sum."
+    },
+    {
       "id": "edge-001",
       "category": "edge_case",
       "difficulty": "hard",

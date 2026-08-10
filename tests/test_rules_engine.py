@@ -10,7 +10,9 @@ from rules_engine import (
     CapGapFields,
     DegreeListFields,
     GracePeriodFields,
+    UnemploymentDateFields,
     UnemploymentFields,
+    _chronology_too_complex_answer,
     _general_address_change_answer,
     _general_cap_gap_answer,
     _general_degree_list_answer,
@@ -21,11 +23,13 @@ from rules_engine import (
     _is_degree_list_trigger_match,
     _is_grace_period_trigger_match,
     _is_trigger_match,
+    _looks_date_oriented,
     compute_address_change_answer,
     compute_answer,
     compute_cap_gap_answer,
     compute_degree_list_answer,
     compute_grace_period_answer,
+    compute_unemployment_deadline_answer,
     match_and_answer,
 )
 
@@ -59,6 +63,32 @@ class FakeLLM:
 
     def with_structured_output(self, model):
         return FakeExtractor(self._result)
+
+
+class FakeMultiLLM:
+    """Like FakeLLM, but returns a different fixed result depending on
+    which Pydantic model class with_structured_output() is called with.
+    Needed for _match_unemployment specifically: it makes an
+    UnemploymentFields call and, conditionally, a separate
+    UnemploymentDateFields call -- see that class's docstring for why
+    they're split rather than one combined schema."""
+
+    def __init__(self, results_by_model):
+        self._results_by_model = results_by_model
+
+    def with_structured_output(self, model):
+        return FakeExtractor(self._results_by_model[model])
+
+
+class _PoisonExtractor:
+    """Raises if ever invoked -- used to prove a code path was skipped
+    entirely, not just that its result was ignored."""
+
+    def invoke(self, prompt):
+        raise AssertionError(
+            "UnemploymentDateFields extraction should not have been called "
+            "for a non-date-oriented question"
+        )
 
 
 # --- compute_answer: pure logic, exhaustive ---
@@ -196,6 +226,156 @@ def test_match_and_answer_extraction_failure_falls_through_to_rag():
 
     result = match_and_answer("I've been unemployed for 95 days", llm=BrokenLLM())
     assert result is None
+
+
+# --- _looks_date_oriented: cheap pre-filter for the 2nd extraction call ---
+
+def test_looks_date_oriented_true_for_month_name():
+    assert _looks_date_oriented("unemployed starting July 15 2026") is True
+
+
+def test_looks_date_oriented_false_for_plain_day_count():
+    assert _looks_date_oriented("I've been unemployed for 95 days") is False
+
+
+# --- compute_unemployment_deadline_answer: pure date arithmetic ---
+
+def test_compute_unemployment_deadline_no_prior_days_includes_caveat():
+    date_fields = UnemploymentDateFields(unemployment_start_month=7, unemployment_start_day=15, unemployment_start_year=2026)
+    result = compute_unemployment_deadline_answer("initial_opt", None, date_fields)
+    assert "July 15, 2026" in result
+    assert "October 13, 2026" in result  # July 15 + 90 days
+    assert "assuming you haven't used any other unemployment days" in result
+
+
+def test_compute_unemployment_deadline_with_prior_days_no_caveat():
+    date_fields = UnemploymentDateFields(unemployment_start_month=7, unemployment_start_day=15, unemployment_start_year=2026)
+    result = compute_unemployment_deadline_answer("initial_opt", 30, date_fields)
+    assert "September 13, 2026" in result  # July 15 + (90 - 30) = 60 days
+    assert "assuming" not in result
+
+
+def test_compute_unemployment_deadline_already_over_cap_before_stretch():
+    date_fields = UnemploymentDateFields(unemployment_start_month=7, unemployment_start_day=15, unemployment_start_year=2026)
+    result = compute_unemployment_deadline_answer("initial_opt", 95, date_fields)
+    assert "already" in result.lower()
+    assert "DSO immediately" in result
+
+
+def test_compute_unemployment_deadline_wraps_into_next_year():
+    date_fields = UnemploymentDateFields(unemployment_start_month=12, unemployment_start_day=1, unemployment_start_year=2026)
+    result = compute_unemployment_deadline_answer("stem_opt_extension", None, date_fields)
+    assert "December 1, 2026" in result
+    # Dec 1 + 150 days lands in the following April
+    assert "2027" in result
+
+
+# --- match_and_answer: unemployment date/chronology branches (2nd call) ---
+
+class _PoisonOnDateFieldsLLM:
+    """Answers a normal UnemploymentFields call, but raises if
+    UnemploymentDateFields is ever requested -- proves the 2nd extraction
+    call didn't fire at all for a plain day-count question, not just that
+    its result was ignored."""
+
+    def __init__(self, unemployment_fields_result):
+        self._result = unemployment_fields_result
+
+    def with_structured_output(self, model):
+        if model is UnemploymentDateFields:
+            return _PoisonExtractor()
+        return FakeExtractor(self._result)
+
+
+def test_match_and_answer_unemployment_non_date_question_skips_second_extraction():
+    """The core fix for the real bug this session: the date-extraction
+    call must not even fire for a plain day-count question -- proven here
+    with a poison extractor that raises if ever invoked."""
+    llm = _PoisonOnDateFieldsLLM(
+        UnemploymentFields(applies=True, opt_phase="initial_opt", unemployment_days_used=95)
+    )
+
+    result = match_and_answer("I've been unemployed for 95 days on initial OPT", llm)
+
+    assert result is not None
+    assert "exceeds" in result["result"].lower()
+
+
+def test_match_and_answer_unemployment_date_question_computes_deadline():
+    llm = FakeMultiLLM({
+        UnemploymentFields: UnemploymentFields(applies=True, opt_phase="initial_opt", unemployment_days_used=None),
+        UnemploymentDateFields: UnemploymentDateFields(
+            unemployment_start_month=7, unemployment_start_day=15, unemployment_start_year=2026
+        ),
+    })
+
+    result = match_and_answer(
+        "if I was unemployed on my initial OPT starting July 15 2026, what date can I be unemployed until?",
+        llm,
+    )
+
+    assert result is not None
+    assert "October 13, 2026" in result["result"]
+    assert_has_rule_citation(result)
+
+
+def test_match_and_answer_unemployment_date_question_missing_phase_asks_clarifying_question():
+    llm = FakeMultiLLM({
+        UnemploymentFields: UnemploymentFields(applies=True, opt_phase=None, unemployment_days_used=None),
+        UnemploymentDateFields: UnemploymentDateFields(
+            unemployment_start_month=7, unemployment_start_day=15, unemployment_start_year=2026
+        ),
+    })
+
+    result = match_and_answer("unemployed starting July 15 2026, what's my deadline?", llm)
+
+    assert result is not None
+    assert "initial" in result["result"].lower() or "stem" in result["result"].lower()
+
+
+def test_match_and_answer_unemployment_chronology_too_complex_declines_to_compute():
+    llm = FakeMultiLLM({
+        UnemploymentFields: UnemploymentFields(applies=True, opt_phase="initial_opt", unemployment_days_used=None),
+        UnemploymentDateFields: UnemploymentDateFields(chronology_too_complex=True),
+    })
+
+    result = match_and_answer(
+        "I was unemployed in January for 20 days, then worked until May, then unemployed again from June",
+        llm,
+    )
+
+    assert result is not None
+    assert result["result"] == _chronology_too_complex_answer()
+
+
+class _BrokenOnDateFieldsLLM:
+    """Answers a normal UnemploymentFields call, but the 2nd
+    (UnemploymentDateFields) extraction call raises."""
+
+    def __init__(self, unemployment_fields_result):
+        self._result = unemployment_fields_result
+
+    def with_structured_output(self, model):
+        if model is UnemploymentDateFields:
+            class BrokenExtractor:
+                def invoke(self, prompt):
+                    raise RuntimeError("simulated date extraction failure")
+            return BrokenExtractor()
+        return FakeExtractor(self._result)
+
+
+def test_match_and_answer_unemployment_date_extraction_failure_falls_back_gracefully():
+    """The 2nd call failing must degrade to the original day-count-only
+    behavior, not lose the answer entirely -- same principle as
+    condense_question()'s LLM-failure fallback."""
+    llm = _BrokenOnDateFieldsLLM(
+        UnemploymentFields(applies=True, opt_phase="initial_opt", unemployment_days_used=95)
+    )
+
+    result = match_and_answer("unemployed 95 days starting July 2026 on initial OPT", llm)
+
+    assert result is not None
+    assert "exceeds" in result["result"].lower()  # fell back to day-count logic
 
 
 # --- compute_grace_period_answer: pure date arithmetic ---

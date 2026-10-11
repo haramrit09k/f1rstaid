@@ -15,6 +15,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from langchain_core.documents import Document
 
@@ -154,9 +155,43 @@ def freshness_multiplier(metadata: Dict, now: Optional[datetime] = None) -> floa
     return 0.9
 
 
+# Law firms, associations and tax-help blogs: useful and fast, but secondary
+# (and some sell services). They are indexed with type "web" like the
+# government pages, so the tier is derived from the source URL at retrieval
+# time -- that also re-tiers everything already in the index, with no
+# re-embedding or migration.
+COMMENTARY_DOMAINS = (
+    "murthy.com",
+    "fragomen.com",
+    "aila.org",
+    "nafsa.org",
+    "bal.com",
+    "ogletree.com",
+    "mcenteelaw.com",
+    "alcorn.law",
+    "immigrationlawgroup.net",
+    "sprintax.com",
+    "cptdog.com",
+    "stilt.com",
+)
+
+
+def source_tier(metadata: Dict) -> str:
+    """Trust tier used for ranking and labelling: pdf, web (official),
+    commentary, news or reddit. Anything unrecognised falls back to its
+    stored type."""
+    doc_type = metadata.get("type")
+    if doc_type == "web":
+        host = (urlparse(metadata.get("source", "")).hostname or "").lower()
+        if any(host == d or host.endswith("." + d) for d in COMMENTARY_DOMAINS):
+            return "commentary"
+    return doc_type or "unknown"
+
+
 _TYPE_LABELS = {
     "pdf": "official document",
     "web": "official/web page",
+    "commentary": "law-firm/expert commentary",
     "news": "news report",
     "reddit": "community post (Reddit)",
 }
@@ -165,7 +200,7 @@ _TYPE_LABELS = {
 def doc_label(metadata: Dict) -> str:
     """Short label shown to the model with each chunk, e.g.
     'news report, published 2026-09-30'."""
-    label = _TYPE_LABELS.get(metadata.get("type"), "document")
+    label = _TYPE_LABELS.get(source_tier(metadata), "document")
     published = published_date(metadata)
     if published:
         return f"{label}, published {published.date().isoformat()}"

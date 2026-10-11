@@ -90,3 +90,32 @@ WEBSITE_SOURCES = [
     "https://www.nafsa.org/professional-resources/browse-by-interest/preparing-f-1-visa-interview",
     "https://www.nafsa.org/professional-resources/learning-and-training/us-visa-and-entry-process-students-and-scholars",
 ]
+
+
+# --- F-1 -> H-1B transition (cap-gap, change of status, cap registration) -----
+# Official pages first. These URLs are best-effort (they could not be fetched
+# when added): a page that fails is logged by the weekly run, so check its log
+# after the first run and fix or drop any that 404.
+H1B_TRANSITION_SOURCES = [
+    # USCIS: the authority for registration dates, selection and fees
+    "https://www.uscis.gov/working-in-the-united-states/h-1b-specialty-occupations",
+    "https://www.uscis.gov/working-in-the-united-states/h-1b-specialty-occupations/h-1b-cap-season",
+    "https://www.uscis.gov/h-1b-electronic-registration-process",
+    "https://www.uscis.gov/policy-manual/volume-2-part-h",
+    # Department of Labor: LCA / prevailing wage
+    "https://flag.dol.gov/programs/H-1B",
+    # State Department: student-visa news and appointment/processing changes
+    "https://travel.state.gov/content/travel/en/News/visas-news.html",
+    # NAFSA regulatory updates (association analysis of SEVP/USCIS changes)
+    "https://www.nafsa.org/regulatory-information",
+    # Law-firm alerts (fast, but secondary and self-interested: ranked below
+    # official pages, see kb_freshness.COMMENTARY_DOMAINS)
+    "https://www.bal.com/news-articles/",
+]
+
+# Add the specific pages your school's international office publishes (OPT /
+# CPT / cap-gap procedures differ by DSO). Left empty on purpose: deep links
+# are school-specific and could not be verified.
+SCHOOL_GUIDANCE_SOURCES: list = []
+
+WEBSITE_SOURCES = WEBSITE_SOURCES + H1B_TRANSITION_SOURCES + SCHOOL_GUIDANCE_SOURCES

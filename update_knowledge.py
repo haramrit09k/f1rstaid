@@ -8,7 +8,7 @@ from calendar import timegm
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 
 import aiohttp
 import feedparser
@@ -17,6 +17,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
 from ingest import ContentProcessor
+from config.sources import H1B_TRANSITION_SOURCES, SCHOOL_GUIDANCE_SOURCES
 from kb_freshness import delete_is_safe, plan_index_changes, stamp_documents
 
 # Configure logging
@@ -37,7 +38,7 @@ WEB_UPDATE_SOURCES = [
     "https://www.murthy.com/view-all-news/",
     "https://www.fragomen.com/insights/index.html",
     "https://www.aila.org/blog/",
-]
+] + H1B_TRANSITION_SOURCES + SCHOOL_GUIDANCE_SOURCES
 
 # Machine-readable RSS feeds for alerts and news
 RSS_FEEDS = [
@@ -65,12 +66,25 @@ _NEWS_RELEVANCE = re.compile(
 # Federal Register (official): rules and notices from DHS/ICE/USCIS that
 # mention practical training, F-1 or SEVIS -- where OPT rule changes show up
 # first, long before any explainer page is updated.
-FEDERAL_REGISTER_URL = (
-    "https://www.federalregister.gov/api/v1/documents.json"
-    "?conditions[term]={term}&conditions[agencies][]=homeland-security-department"
-    "&order=newest&per_page=15"
-)
-FEDERAL_REGISTER_TERMS = ['"practical training"', '"F-1" students', "SEVIS"]
+FEDERAL_REGISTER_API = "https://www.federalregister.gov/api/v1/documents.json"
+_DHS = "homeland-security-department"
+_DOL = "labor-department"
+_STATE = "state-department"
+# (search term, agencies): DHS for OPT/SEVIS/H-1B rules, Labor for the
+# LCA/prevailing-wage side of H-1B, State for student-visa processing.
+FEDERAL_REGISTER_QUERIES = [
+    ('"practical training"', [_DHS]),
+    ('"F-1" students', [_DHS, _STATE]),
+    ("SEVIS", [_DHS]),
+    ('"H-1B"', [_DHS, _DOL, _STATE]),
+    ('"specialty occupation"', [_DHS, _DOL]),
+]
+
+
+def federal_register_url(term: str, agencies: List[str]) -> str:
+    params = [("conditions[term]", term), ("order", "newest"), ("per_page", "15")]
+    params += [("conditions[agencies][]", a) for a in agencies]
+    return f"{FEDERAL_REGISTER_API}?{urlencode(params)}"
 
 
 # Real failures (an OpenAI quota/auth error while embedding, a source blowing
@@ -352,9 +366,9 @@ async def update_from_federal_register() -> bool:
         docs: List[Document] = []
         failures = 0
         async with aiohttp.ClientSession() as session:
-            for term in FEDERAL_REGISTER_TERMS:
+            for term, agencies in FEDERAL_REGISTER_QUERIES:
                 try:
-                    url = FEDERAL_REGISTER_URL.format(term=term.replace(" ", "+"))
+                    url = federal_register_url(term, agencies)
                     async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                         if resp.status != 200:
                             raise RuntimeError(f"HTTP {resp.status}")
@@ -362,8 +376,8 @@ async def update_from_federal_register() -> bool:
                 except Exception as e:
                     failures += 1
                     logging.warning(f"Federal Register query {term!r} failed: {e}")
-        if failures == len(FEDERAL_REGISTER_TERMS):
-            _record_error("Every Federal Register query failed (check FEDERAL_REGISTER_URL)")
+        if failures == len(FEDERAL_REGISTER_QUERIES):
+            _record_error("Every Federal Register query failed (check FEDERAL_REGISTER_API / FEDERAL_REGISTER_QUERIES)")
             return False
         docs = [d for d in docs if processor.validate_content(d)]
         if not docs:

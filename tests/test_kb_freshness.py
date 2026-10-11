@@ -205,3 +205,67 @@ def test_federal_register_payload_becomes_dated_official_documents():
     assert doc.metadata["type"] == "web"
     assert doc.metadata["published"].startswith("2026-09-15")
     assert "Proposed Rule" in doc.page_content and "Homeland Security" in doc.page_content
+
+
+# --- trust tiers, H-1B sources and Federal Register queries -----------------------
+
+from urllib.parse import parse_qs, urlparse  # noqa: E402
+
+from config import reddit_config, sources  # noqa: E402
+from kb_freshness import source_tier  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "source,doc_type,expected",
+    [
+        ("https://www.uscis.gov/i-765", "web", "web"),
+        ("https://studyinthestates.dhs.gov/x", "web", "web"),
+        ("https://www.fragomen.com/insights/index.html", "web", "commentary"),
+        ("https://blog.sprintax.com/f1-tax", "web", "commentary"),
+        ("https://www.nafsa.org/regulatory-information", "web", "commentary"),
+        ("https://notfragomen.com/x", "web", "web"),  # not a suffix match
+        ("https://reddit.com/r/h1b/x", "reddit", "reddit"),
+        ("https://news.example/x", "news", "news"),
+        ("docs/guide.pdf", "pdf", "pdf"),
+    ],
+)
+def test_source_tier_derived_from_domain(source, doc_type, expected):
+    assert source_tier({"source": source, "type": doc_type}) == expected
+
+
+def test_commentary_ranks_below_official_and_above_news_and_is_labelled():
+    from f1rstaid import SOURCE_TYPE_WEIGHTS
+
+    assert SOURCE_TYPE_WEIGHTS["web"] > SOURCE_TYPE_WEIGHTS["commentary"] > SOURCE_TYPE_WEIGHTS["news"]
+    label = doc_label({"source": "https://www.murthy.com/x", "type": "web", "published": "2026-09-30T00:00:00+00:00"})
+    assert label == "law-firm/expert commentary, published 2026-09-30"
+
+
+def test_h1b_sources_are_wired_into_both_source_lists_without_duplicates():
+    assert sources.H1B_TRANSITION_SOURCES
+    for url in sources.H1B_TRANSITION_SOURCES:
+        assert url.startswith("https://")
+        assert url in sources.WEBSITE_SOURCES  # full rebuild
+        assert url in update_knowledge.WEB_UPDATE_SOURCES  # weekly job
+    assert len(sources.WEBSITE_SOURCES) == len(set(sources.WEBSITE_SOURCES))
+    assert any("uscis.gov" in u and "h-1b" in u.lower() for u in sources.H1B_TRANSITION_SOURCES)
+
+
+def test_reddit_h1b_coverage_added():
+    assert "h1b" in reddit_config.SUBREDDITS
+    assert "H-1B lottery" in reddit_config.SEARCH_TERMS
+
+
+def test_federal_register_url_includes_term_and_every_agency():
+    url = update_knowledge.federal_register_url('"H-1B"', ["homeland-security-department", "labor-department"])
+    query = parse_qs(urlparse(url).query)
+    assert query["conditions[term]"] == ['"H-1B"']
+    assert query["conditions[agencies][]"] == ["homeland-security-department", "labor-department"]
+    assert query["order"] == ["newest"]
+
+
+def test_federal_register_queries_cover_h1b_and_other_agencies():
+    terms = [t for t, _ in update_knowledge.FEDERAL_REGISTER_QUERIES]
+    agencies = {a for _, ags in update_knowledge.FEDERAL_REGISTER_QUERIES for a in ags}
+    assert '"H-1B"' in terms and '"specialty occupation"' in terms
+    assert {"homeland-security-department", "labor-department", "state-department"} <= agencies

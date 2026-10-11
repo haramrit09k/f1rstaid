@@ -1147,3 +1147,37 @@ def test_source_cards_show_the_date():
         metadata={"source": "https://news.example/x", "type": "news", "published": "2026-09-30T00:00:00+00:00"},
     )
     assert "Published Sep 30, 2026" in F1rstAidApp.format_sources([doc])
+
+
+# --- F-1 -> H-1B transition is in scope; deep H-1B/green-card topics are not ---
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "When is the H-1B cap registration period?",
+        "Does cap-gap extend my work authorization while my H-1B is pending?",
+        "How does the H-1B lottery work for F-1 students?",
+        "What counts as a specialty occupation for H-1B?",
+    ],
+)
+def test_h1b_transition_questions_pass_the_keyword_gate(question):
+    assert F1rstAidApp(AppConfig())._is_relevant_question(question)[0] is True
+
+
+def test_relevance_prompt_teaches_the_h1b_scope_boundary():
+    seen = []
+
+    class _Spy:
+        def with_structured_output(self, model):
+            class _E:
+                def invoke(self_inner, prompt):
+                    seen.append(prompt)
+                    return RelevanceFields(applies=True)
+            return _E()
+
+    app = F1rstAidApp(AppConfig())
+    app.judge_llm = _Spy()
+    app._is_relevant_question("When is H-1B cap registration?")
+
+    assert "-> True (the F-1 to H-1B transition" in seen[0]
+    assert "PERM" in seen[0] and "-> False" in seen[0]

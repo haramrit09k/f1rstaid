@@ -1181,3 +1181,63 @@ def test_relevance_prompt_teaches_the_h1b_scope_boundary():
 
     assert "-> True (the F-1 to H-1B transition" in seen[0]
     assert "PERM" in seen[0] and "-> False" in seen[0]
+
+
+# --- source links: news is linkable, readable labels, safe markup ---
+
+def test_news_sources_get_a_clickable_link_not_source_unavailable():
+    link = F1rstAidApp._get_source_link("https://news.example.com/opt-rule", "news")
+    assert "href='https://news.example.com/opt-rule'" in link
+    assert "Source unavailable" not in link
+
+
+def test_source_link_text_is_short_and_readable():
+    url = (
+        "https://www.uscis.gov/working-in-the-united-states/students-and-exchange-visitors/"
+        "optional-practical-training-opt-for-f-1-students"
+    )
+    link = F1rstAidApp._get_source_link(url, "web")
+    text = link.split(">")[1].split("<")[0]
+    assert text.startswith("uscis.gov/working-in-the-united-states")
+    assert text.rstrip(" 🔗").endswith("…") and len(text) <= 70
+    assert url in link  # the full URL stays in the href
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["javascript://example.com/%0aalert(1)", "data:text/html,<b>x</b>", "ftp://example.com/x", "not a url"],
+)
+def test_source_link_rejects_non_http_urls(bad):
+    assert F1rstAidApp._get_source_link(bad, "news") == "Invalid URL ❌"
+
+
+def test_source_link_escapes_quotes_so_markup_cannot_break_out():
+    link = F1rstAidApp._get_source_link("https://example.com/x'onmouseover='alert(1)", "web")
+    assert "onmouseover='alert" not in link
+    assert "&#x27;" in link
+
+
+# --- UI helpers ---
+
+def test_freshness_notice_flags_a_stale_knowledge_base():
+    from datetime import date
+
+    from f1rstaid import freshness_notice
+
+    text, stale = freshness_notice("August 17, 2026", date(2026, 10, 11))
+    assert stale is True and "55 days ago" in text
+
+    text, stale = freshness_notice("October 5, 2026", date(2026, 10, 11))
+    assert stale is False and "updated October 5, 2026" in text
+
+    text, stale = freshness_notice("sometime", date(2026, 10, 11))
+    assert stale is False and "sometime" in text
+
+
+def test_trial_status_label_for_each_state():
+    from f1rstaid import trial_status_label
+
+    assert trial_status_label(False, 3, True) == "🎟️ 3 free left"
+    assert trial_status_label(False, 0, True) == "🎟️ 0 free left"
+    assert trial_status_label(True, 0, True) == "🔑 Your key"
+    assert trial_status_label(False, 5, False) == "🔑 Add key"

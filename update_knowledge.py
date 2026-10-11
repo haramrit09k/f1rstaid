@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
@@ -40,6 +41,19 @@ RSS_FEEDS = [
 ]
 
 
+# Real failures (an OpenAI quota/auth error while embedding, a source blowing
+# up) as opposed to "nothing new this week". Each updater returns False for
+# both, and the job used to exit 0 either way -- so a run that failed every
+# week for ~7 weeks (OpenAI credits exhausted) still showed a green check.
+# main() exits non-zero when anything is recorded here.
+_errors: List[str] = []
+
+
+def _record_error(message: str) -> None:
+    logging.error(message)
+    _errors.append(message)
+
+
 def _write_last_updated(vector_store_path: str) -> None:
     """Records when the index was actually last refreshed, inside
     faiss_index/ itself so weekly-update.yml's existing `git add
@@ -76,7 +90,7 @@ def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss
         _write_last_updated(vector_store_path)
         return True
     except Exception as e:
-        logging.error(f"Error appending to vector store: {e}")
+        _record_error(f"Error appending to vector store: {e}")
         return False
 
 
@@ -110,7 +124,7 @@ async def update_knowledge_base() -> bool:
         return False
 
     except Exception as e:
-        logging.error(f"Failed to update Reddit content: {e}")
+        _record_error(f"Failed to update Reddit content: {e}")
         return False
 
 
@@ -141,7 +155,7 @@ async def update_web_sources() -> bool:
         return False
 
     except Exception as e:
-        logging.error(f"Web source update failed: {e}")
+        _record_error(f"Web source update failed: {e}")
         return False
 
 
@@ -187,7 +201,7 @@ async def update_from_rss() -> bool:
         return False
 
     except Exception as e:
-        logging.error(f"RSS update failed: {e}")
+        _record_error(f"RSS update failed: {e}")
         return False
 
 
@@ -207,7 +221,9 @@ async def _run_all_updates() -> list:
     return [reddit_result, web_result, rss_result]
 
 
-if __name__ == "__main__":
+def main() -> int:
+    """Runs all updaters; returns the process exit code (non-zero if any
+    real error was recorded -- see _errors)."""
     print(
         f"\n🔄 Starting knowledge base update at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     )
@@ -220,3 +236,14 @@ if __name__ == "__main__":
     else:
         print("\n❌ Knowledge base update failed.")
         print("Check the update_knowledge.log file for details.")
+
+    if _errors:
+        print(f"\n❌ {len(_errors)} error(s) during the update:")
+        for message in _errors:
+            print(f"  - {message}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

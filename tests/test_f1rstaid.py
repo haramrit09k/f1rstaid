@@ -1059,3 +1059,91 @@ def test_initialize_passes_session_key_to_every_openai_client(monkeypatch):
 
     assert chat_keys == ["visitor-key", "visitor-key"]
     assert embed_keys == ["visitor-key"]
+
+
+# --- freshness-aware retrieval, labels and prompt ---
+
+def test_retriever_prefers_the_more_recent_of_two_equally_close_news_docs():
+    from datetime import datetime, timedelta, timezone
+
+    def news(text, days_ago):
+        published = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+        return Document(page_content=text, metadata={"source": text, "type": "news", "published": published})
+
+    class _DB:
+        def similarity_search_with_score(self, query, k):
+            return [(news("old story", 800), 0.5), (news("fresh story", 5), 0.5)]
+
+    retriever = SourceWeightedRetriever.construct(db=_DB(), k=2, candidate_pool_size=30)
+    docs = retriever._get_relevant_documents("opt")
+
+    assert [d.page_content for d in docs] == ["fresh story", "old story"]
+    assert "news report, published" in docs[0].metadata["doc_label"]
+
+
+def test_labels_are_added_to_copies_not_stored_documents():
+    stored = Document(page_content="x", metadata={"source": "s", "type": "web"})
+
+    class _DB:
+        def similarity_search_with_score(self, query, k):
+            return [(stored, 0.1)]
+
+    retriever = SourceWeightedRetriever.construct(db=_DB(), k=1, candidate_pool_size=30)
+    (returned,) = retriever._get_relevant_documents("q")
+
+    assert "doc_label" in returned.metadata
+    assert "doc_label" not in stored.metadata
+
+
+def test_qa_chain_shows_the_model_each_documents_label_and_date():
+    from langchain.chains import RetrievalQA
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.retrievers import BaseRetriever
+
+    seen = []
+
+    class _RecordingLLM(FakeListChatModel):
+        def _generate(self, messages, *a, **k):
+            seen.append("\n".join(m.content for m in messages))
+            return super()._generate(messages, *a, **k)
+
+    class _Retriever(BaseRetriever):
+        def _get_relevant_documents(self, query, *, run_manager=None):
+            return [
+                Document(
+                    page_content="Court blocks OPT rule.",
+                    metadata={"source": "u", "type": "news", "doc_label": "news report, published 2026-09-30"},
+                )
+            ]
+
+    chain = RetrievalQA.from_chain_type(
+        llm=_RecordingLLM(responses=["ok"]),
+        retriever=_Retriever(),
+        chain_type="stuff",
+        return_source_documents=True,
+        chain_type_kwargs={"prompt": QA_PROMPT, "document_prompt": f1rstaid.DOCUMENT_PROMPT},
+    )
+    result = chain.invoke({"query": "what happened?"})
+
+    assert result["result"] == "ok"
+    assert "[news report, published 2026-09-30]\nCourt blocks OPT rule." in seen[0]
+    assert "NOT in effect unless an official document confirms it" in seen[0]
+
+
+def test_news_sources_rank_between_official_and_reddit_and_trigger_a_note():
+    app = F1rstAidApp(AppConfig())
+    docs = [
+        Document(page_content="r", metadata={"type": "reddit"}),
+        Document(page_content="n", metadata={"type": "news"}),
+        Document(page_content="w", metadata={"type": "web"}),
+    ]
+    assert [d.metadata["type"] for d in app._sort_by_source_priority(docs)] == ["web", "news", "reddit"]
+    assert "news reports" in app.format_answer("Answer.", docs)
+
+
+def test_source_cards_show_the_date():
+    doc = Document(
+        page_content="Some text here.",
+        metadata={"source": "https://news.example/x", "type": "news", "published": "2026-09-30T00:00:00+00:00"},
+    )
+    assert "Published Sep 30, 2026" in F1rstAidApp.format_sources([doc])

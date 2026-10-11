@@ -1,10 +1,14 @@
 import asyncio
+import html
 import json
 import logging
+import re
 import sys
-from datetime import datetime, timezone
+from calendar import timegm
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+from urllib.parse import quote_plus
 
 import aiohttp
 import feedparser
@@ -13,6 +17,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 
 from ingest import ContentProcessor
+from kb_freshness import delete_is_safe, plan_index_changes, stamp_documents
 
 # Configure logging
 logging.basicConfig(
@@ -39,6 +44,33 @@ RSS_FEEDS = [
     "https://www.uscis.gov/rss/alerts",
     "https://www.nafsa.org/rss-feed.xml?feed=am_news",
 ]
+
+# News coverage (type "news"): headline + outlet + date + snippet from Google
+# News search RSS -- we index the headline/snippet and link back, not the
+# article body (paywalls, copyright). Ranked below official sources and
+# labelled as news in the answer prompt and citations.
+NEWS_QUERIES = [
+    '"F-1" OPT students',
+    '"STEM OPT" OR "optional practical training" rule',
+    'international students visa policy F-1',
+]
+NEWS_FEED_URL = "https://news.google.com/rss/search?q={query}+when:60d&hl=en-US&gl=US&ceid=US:en"
+NEWS_MAX_AGE_DAYS = 120
+NEWS_MAX_PER_QUERY = 20
+_NEWS_RELEVANCE = re.compile(
+    r"\b(f-?1|opt|cpt|stem|sevis|sevp|i-20|international students?|student visas?|visas?)\b",
+    re.IGNORECASE,
+)
+
+# Federal Register (official): rules and notices from DHS/ICE/USCIS that
+# mention practical training, F-1 or SEVIS -- where OPT rule changes show up
+# first, long before any explainer page is updated.
+FEDERAL_REGISTER_URL = (
+    "https://www.federalregister.gov/api/v1/documents.json"
+    "?conditions[term]={term}&conditions[agencies][]=homeland-security-department"
+    "&order=newest&per_page=15"
+)
+FEDERAL_REGISTER_TERMS = ['"practical training"', '"F-1" students', "SEVIS"]
 
 
 # Real failures (an OpenAI quota/auth error while embedding, a source blowing
@@ -76,7 +108,15 @@ def _write_last_updated(vector_store_path: str) -> None:
 
 
 def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss_index") -> bool:
-    """Append new documents to existing vector store."""
+    """Merge new documents into the existing vector store.
+
+    Not a blind append: unchanged chunks are skipped (no embedding call, no
+    duplicate), chunks of a re-fetched source whose content changed replace
+    the old version, and any pre-existing exact duplicates are cleaned up
+    (see kb_freshness.plan_index_changes). Every new chunk is stamped with
+    fetched_at and a content_hash. Returns True when the store was updated
+    successfully (even if nothing needed to change), False on an error.
+    """
     try:
         # request_timeout: a stalled embeddings call must raise, not hang --
         # the weekly update workflow silently hung for 6h/run for months
@@ -85,8 +125,29 @@ def append_to_vector_store(docs: List[Document], vector_store_path: str = "faiss
         vector_store = FAISS.load_local(
             vector_store_path, embeddings, allow_dangerous_deserialization=True
         )
-        vector_store.add_documents(docs)
-        vector_store.save_local(vector_store_path)
+        stamp_documents(docs)
+        existing = {
+            doc_id: vector_store.docstore.search(doc_id)
+            for doc_id in vector_store.index_to_docstore_id.values()
+        }
+        to_delete, to_add, stats = plan_index_changes(existing, docs)
+
+        # Exact duplicates are always safe to drop (one copy stays, and
+        # there may be many after months of blind appends); the cap guards
+        # the other kind of deletion -- replacing stale versions -- against
+        # a bug or a bad fetch wiping out the index.
+        unique_count = len(existing) - stats["removed_duplicates"]
+        if not delete_is_safe(unique_count, stats["removed_stale"]):
+            raise RuntimeError(
+                f"Refusing to replace {stats['removed_stale']} of {unique_count} indexed chunks in one run"
+            )
+        if to_delete:
+            vector_store.delete(to_delete)
+        if to_add:
+            vector_store.add_documents(to_add)
+        if to_delete or to_add:
+            vector_store.save_local(vector_store_path)
+        logging.info(f"Vector store update: {stats}")
         _write_last_updated(vector_store_path)
         return True
     except Exception as e:
@@ -172,14 +233,15 @@ async def update_from_rss() -> bool:
                     content = f"{entry.get('title', '')}\n\n{entry.get('summary', '')}"
                     if len(content) < 50:
                         continue
-                    doc = Document(
-                        page_content=content,
-                        metadata={
-                            "source": entry.get("link", feed_url),
-                            "type": "web",
-                            "title": entry.get("title", ""),
-                        },
-                    )
+                    metadata = {
+                        "source": entry.get("link", feed_url),
+                        "type": "web",
+                        "title": entry.get("title", ""),
+                    }
+                    published = _entry_published(entry)
+                    if published:
+                        metadata["published"] = published
+                    doc = Document(page_content=content, metadata=metadata)
                     if processor.validate_content(doc):
                         doc.page_content = processor.preprocess_text(doc.page_content)
                         docs.append(doc)
@@ -205,6 +267,142 @@ async def update_from_rss() -> bool:
         return False
 
 
+def _entry_published(entry) -> Optional[str]:
+    """ISO timestamp from a feedparser entry's parsed date, if present."""
+    parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+    if not parsed:
+        return None
+    try:
+        return datetime.fromtimestamp(timegm(parsed), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _strip_html(text: str) -> str:
+    return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text or ""))).strip()
+
+
+def news_documents_from_feed(feed, now: Optional[datetime] = None) -> List[Document]:
+    """Turn a parsed news feed into type='news' Documents: recent, on-topic
+    entries only, headline + outlet + date (+ snippet when it adds
+    something beyond the headline)."""
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=NEWS_MAX_AGE_DAYS)
+    docs: List[Document] = []
+    for entry in feed.entries[:NEWS_MAX_PER_QUERY]:
+        title = _strip_html(entry.get("title", ""))
+        published = _entry_published(entry)
+        if not title or not published or datetime.fromisoformat(published) < cutoff:
+            continue
+        if not _NEWS_RELEVANCE.search(title):
+            continue
+        outlet = _strip_html(
+            (entry.get("source") or {}).get("title", "") if isinstance(entry.get("source"), dict) else ""
+        )
+        snippet = _strip_html(entry.get("summary", ""))
+        parts = [title]
+        if outlet:
+            parts.append(f"Outlet: {outlet}")
+        parts.append(f"Published: {published[:10]}")
+        if snippet and snippet.lower() not in title.lower() and title.lower() not in snippet.lower():
+            parts.append(snippet)
+        docs.append(
+            Document(
+                page_content="\n\n".join(parts),
+                metadata={
+                    "source": entry.get("link", ""),
+                    "type": "news",
+                    "title": title,
+                    "published": published,
+                },
+            )
+        )
+    return docs
+
+
+def federal_register_documents(payload: dict) -> List[Document]:
+    """Documents from a Federal Register API response (type='web', i.e.
+    official), dated with the document's publication date."""
+    docs: List[Document] = []
+    for item in payload.get("results", []):
+        title = (item.get("title") or "").strip()
+        abstract = (item.get("abstract") or "").strip()
+        url = item.get("html_url") or ""
+        if not title or not url:
+            continue
+        agencies = ", ".join(a.get("name", "") for a in item.get("agencies", []) if a.get("name"))
+        parts = [f"Federal Register ({item.get('type', 'document')}): {title}"]
+        if agencies:
+            parts.append(f"Agency: {agencies}")
+        if item.get("publication_date"):
+            parts.append(f"Published: {item['publication_date']}")
+        if abstract:
+            parts.append(abstract)
+        metadata = {"source": url, "type": "web", "title": title}
+        if item.get("publication_date"):
+            metadata["published"] = f"{item['publication_date']}T00:00:00+00:00"
+        docs.append(Document(page_content="\n\n".join(parts), metadata=metadata))
+    return docs
+
+
+async def update_from_federal_register() -> bool:
+    """Official rules/notices from the Federal Register."""
+    try:
+        processor = ContentProcessor()
+        docs: List[Document] = []
+        failures = 0
+        async with aiohttp.ClientSession() as session:
+            for term in FEDERAL_REGISTER_TERMS:
+                try:
+                    url = FEDERAL_REGISTER_URL.format(term=term.replace(" ", "+"))
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        if resp.status != 200:
+                            raise RuntimeError(f"HTTP {resp.status}")
+                        docs.extend(federal_register_documents(await resp.json()))
+                except Exception as e:
+                    failures += 1
+                    logging.warning(f"Federal Register query {term!r} failed: {e}")
+        if failures == len(FEDERAL_REGISTER_TERMS):
+            _record_error("Every Federal Register query failed (check FEDERAL_REGISTER_URL)")
+            return False
+        docs = [d for d in docs if processor.validate_content(d)]
+        if not docs:
+            logging.warning("No Federal Register content retrieved")
+            return False
+        return append_to_vector_store(processor.text_splitter.split_documents(docs))
+    except Exception as e:
+        _record_error(f"Federal Register update failed: {e}")
+        return False
+
+
+async def update_from_news() -> bool:
+    """Recent news coverage (type='news') via search-RSS queries."""
+    try:
+        processor = ContentProcessor()
+        docs: List[Document] = []
+        failures = 0
+        for query in NEWS_QUERIES:
+            try:
+                feed = feedparser.parse(NEWS_FEED_URL.format(query=quote_plus(query)))
+                if not feed.entries and getattr(feed, "bozo", False):
+                    raise RuntimeError(str(getattr(feed, "bozo_exception", "unparseable feed")))
+                docs.extend(news_documents_from_feed(feed))
+            except Exception as e:
+                failures += 1
+                logging.warning(f"News query {query!r} failed: {e}")
+        if failures == len(NEWS_QUERIES):
+            _record_error("Every news query failed (check NEWS_FEED_URL)")
+            return False
+        docs = [d for d in docs if processor.validate_content(d)]
+        if not docs:
+            logging.warning("No news content retrieved")
+            return False
+        return append_to_vector_store(processor.text_splitter.split_documents(docs))
+    except Exception as e:
+        _record_error(f"News update failed: {e}")
+        return False
+
+
 async def _run_all_updates() -> list:
     """Run sequentially, not via asyncio.gather.
 
@@ -218,7 +416,9 @@ async def _run_all_updates() -> list:
     reddit_result = await update_knowledge_base()  # Reddit
     web_result = await update_web_sources()         # USCIS/DHS/law firm pages
     rss_result = await update_from_rss()             # RSS feeds (USCIS alerts, NAFSA)
-    return [reddit_result, web_result, rss_result]
+    fr_result = await update_from_federal_register()  # official rules/notices
+    news_result = await update_from_news()           # news coverage
+    return [reddit_result, web_result, rss_result, fr_result, news_result]
 
 
 def main() -> int:

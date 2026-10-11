@@ -12,6 +12,8 @@ A smart assistant for F-1 students navigating U.S. immigration regulations, powe
 - **Multi-source knowledge base**: official government documents (USCIS, DHS/Study in the States), university guidance, and Reddit community experiences (weighted below official sources, shown separately, and refreshed weekly).
 - **Cost-protected**: a shared trial key lets anyone try the app free (rate-limited per session and per day); bringing your own key removes the limit.
 - **User feedback loop**: 👍/👎 on every answer; a 👎 with a comment can file a GitHub issue automatically (rate-limited, and the original question is never included — this repo is public).
+- **News and Federal Register coverage**: recent news headlines (labelled as news, ranked below official sources) and DHS rules/notices from the Federal Register are indexed alongside official pages. Each chunk carries a publication or retrieval date, recent items get a small ranking boost, citations show their date, and the answer prompt tells the model to prefer official over news over Reddit and to treat news about proposed changes as not yet in effect.
+- **No duplicate or stale chunks**: the weekly update skips unchanged content (no embedding spend), replaces the old version of a changed page, and cleans up exact duplicates (`kb_freshness.py`).
 - **Freshness transparency**: the UI shows when the knowledge base was actually last refreshed, so a recent policy change isn't silently assumed to be included.
 
 ## 🗺️ Architecture

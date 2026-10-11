@@ -25,7 +25,9 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 import rules_engine
+from chat_store import ChatStore, is_valid_chat_id, new_chat_id
 from content_safety import looks_like_prompt_injection
+from follow_ups import suggest_follow_ups
 from kb_freshness import date_caption, doc_label, freshness_multiplier, source_tier
 
 # Picks up OPENAI_API_KEY (and anything else) from a local .env if present,
@@ -932,15 +934,15 @@ APP_CSS = """
 }
 
 /* Example-question chips: 2 x 2 grid with big touch targets. */
-.st-key-chips [data-testid="stHorizontalBlock"] {
+[class*="st-key-chips"] [data-testid="stHorizontalBlock"] {
     flex-wrap: wrap !important;
     gap: 0.5rem !important;
 }
-.st-key-chips [data-testid="stColumn"], .st-key-chips [data-testid="column"] {
+[class*="st-key-chips"] [data-testid="stColumn"], [class*="st-key-chips"] [data-testid="column"] {
     flex: 1 1 calc(50% - 0.5rem) !important;
     min-width: calc(50% - 0.5rem) !important;
 }
-.st-key-chips button {
+[class*="st-key-chips"] button {
     min-height: 3rem;
     font-size: 0.9rem;
     line-height: 1.25;
@@ -1560,20 +1562,25 @@ class F1rstAidApp:
             doc.metadata.get("type") == "reddit" for doc in sources
         )
 
-        formatted_answer = result
+        # The answer comes first: on a phone the first thing a student reads
+        # should be the answer, not a caveat about where part of it came from.
+        # Source caveats follow it as small italic lines.
+        notes = []
         if any(doc.metadata.get("type") == "news" for doc in sources):
-            formatted_answer = (
-                "📰 Note: Some of this comes from news reports, which may describe "
+            notes.append(
+                "📰 Some of this comes from news reports, which may describe "
                 "proposed or unconfirmed changes -- check the official sources "
-                "below and with your DSO.\n\n" + formatted_answer
+                "below and with your DSO."
             )
         if has_reddit_sources:
-            formatted_answer = (
-                "⚠️ Note: Some of this information comes from Reddit community experiences "
-                "and should be verified with official sources.\n\n" + formatted_answer
+            notes.append(
+                "⚠️ Some of this information comes from Reddit community experiences "
+                "and should be verified with official sources."
             )
 
-        return formatted_answer
+        if not notes:
+            return result
+        return result + "\n\n" + "\n\n".join(f"*{note}*" for note in notes)
 
     def display_answer(self, answer: Dict):
         """Display formatted answer and sources."""
@@ -1590,8 +1597,12 @@ class F1rstAidApp:
             answer.get("source_documents", []) if answer_type in ("rule", "rag") else []
         )
 
+        # A clarifying question ("are you on initial OPT or STEM?") is not an
+        # answer: no "Instantly calculated" badge, no legal disclaimer.
+        is_clarifying = bool(answer.get("clarify_options"))
+
         badge = _ANSWER_BADGES.get(answer_type)
-        if badge:
+        if badge and not is_clarifying:
             label, tooltip, css_class = badge
             title_attr = f" title='{escape(tooltip)}'" if tooltip else ""
             st.markdown(
@@ -1608,7 +1619,7 @@ class F1rstAidApp:
         # A substantive answer (computed or AI-generated) is where a
         # not-legal-advice reminder actually matters -- skip it for
         # off-topic declines, help text, etc. where it'd just be noise.
-        if answer_type in ("rule", "rag"):
+        if answer_type in ("rule", "rag") and not is_clarifying:
             st.markdown(
                 "<div class='disclaimer-box'>⚖️ This is not legal advice. "
                 "Immigration rules and individual circumstances vary -- "
@@ -1653,6 +1664,91 @@ class F1rstAidApp:
                     )
 
                 st.caption("PDF links open in your default PDF viewer.")
+
+
+# --- Keeping the chat across a page refresh (see chat_store.py) ---------------
+CHAT_PARAM = "c"
+_chat_store = ChatStore(lambda: _get_redis())
+
+
+def _restore_chat_once() -> None:
+    """On a fresh session whose URL carries ?c=<id>, bring back the saved
+    chat (and the free-question count). Runs once per session."""
+    if st.session_state.get("_chat_restored"):
+        return
+    st.session_state["_chat_restored"] = True
+    chat_id = st.query_params.get(CHAT_PARAM)
+    if not is_valid_chat_id(chat_id) or st.session_state.get("messages"):
+        return
+    data = _chat_store.load(chat_id)
+    if data and data["messages"]:
+        st.session_state.messages = data["messages"]
+        st.session_state["chat_id"] = chat_id
+        st.session_state["shared_key_query_count"] = max(
+            st.session_state.get("shared_key_query_count", 0), data["shared_key_count"]
+        )
+
+
+def _persist_chat() -> None:
+    """Save the conversation and put its id in the URL -- only when Redis is
+    configured and the save worked, so the URL never points at nothing."""
+    chat_id = st.session_state.get("chat_id") or new_chat_id()
+    saved = _chat_store.save(
+        chat_id,
+        st.session_state.get("messages", []),
+        st.session_state.get("shared_key_query_count", 0),
+    )
+    if saved:
+        st.session_state["chat_id"] = chat_id
+        st.query_params[CHAT_PARAM] = chat_id
+
+
+def _forget_chat() -> None:
+    chat_id = st.session_state.pop("chat_id", None)
+    if chat_id:
+        _chat_store.delete(chat_id)
+    if CHAT_PARAM in st.query_params:
+        del st.query_params[CHAT_PARAM]
+
+
+def _render_next_step_buttons(messages: List[Dict]) -> None:
+    """Tappable replies under the latest assistant message: the options for a
+    clarifying question, or a few related questions after a normal answer."""
+    last = messages[-1] if messages else None
+    if not last or last.get("role") != "assistant" or "answer" not in last:
+        return
+    answer = last["answer"]
+    options = answer.get("clarify_options")
+    if options:
+        st.caption("Tap one to answer:")
+        suggestions = [(label, reply) for label, reply in options]
+        key_prefix = "clarify"
+    else:
+        if classify_answer(answer) not in ("rule", "rag"):
+            return
+        user_turns = [m["content"] for m in messages if m.get("role") == "user"]
+        topic_text = user_turns[-1] if user_turns else ""
+        if len(user_turns) >= 2 and len(topic_text.split()) <= _DIRECT_ANSWER_WORD_LIMIT:
+            # a short reply ("I'm on initial OPT") -- the topic is in the
+            # question it answered
+            topic_text = f"{user_turns[-2]} {topic_text}"
+        suggestions = suggest_follow_ups(topic_text, user_turns)
+        if not suggestions:
+            return
+        st.caption("Related questions:")
+        key_prefix = "followup"
+    with st.container(key=f"chips-{key_prefix}"):
+        for row_start in range(0, len(suggestions), 2):
+            row = st.columns(2)
+            for offset, (label, text) in enumerate(suggestions[row_start:row_start + 2]):
+                with row[offset]:
+                    if st.button(
+                        label,
+                        key=f"{key_prefix}_{len(messages)}_{row_start + offset}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["_pending_prompt"] = text
+                        st.rerun()
 
 
 STALE_KB_DAYS = 21  # weekly refresh: three weeks old means runs were missed
@@ -1778,6 +1874,10 @@ def main():
             "confirm anything important with your DSO."
         )
 
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+        _restore_chat_once()
+
         # The label is computed from last run's widget state so it is right on
         # the very run that changes it (the key box's value is already in
         # session_state when the script reruns).
@@ -1806,6 +1906,10 @@ directly instead of guessed.
 anything important with your DSO or an immigration attorney.
 
 **Tips:** mention dates, form numbers and your OPT phase for a sharper answer.
+
+**Your chat:** when saving is enabled, your conversation is kept for 24 hours
+under the link in your address bar so a refresh doesn't lose it. Anyone with
+that link can read it, so don't share it. 🔄 New chat deletes it.
                         """
                     )
                     st.caption(
@@ -1875,6 +1979,7 @@ anything important with your DSO or an immigration attorney.
             if has_messages:
                 with columns[2]:
                     if st.button("🔄 New chat", use_container_width=True):
+                        _forget_chat()
                         st.session_state.messages = []
                         st.rerun()
 
@@ -1935,9 +2040,12 @@ anything important with your DSO or an immigration attorney.
                 with st.chat_message(msg["role"]):
                     if msg["role"] == "assistant" and "answer" in msg:
                         app.display_answer(msg["answer"])
-                        render_feedback_widget(i, msg["answer"])
+                        if not msg["answer"].get("clarify_options"):
+                            render_feedback_widget(i, msg["answer"])
                     else:
                         st.markdown(msg["content"])
+
+            _render_next_step_buttons(st.session_state.messages)
 
             prompt = st.chat_input("Ask about OPT, CPT, travel, taxes…", max_chars=MAX_QUESTION_CHARS)
             prompt = prompt or st.session_state.pop("_pending_prompt", None)
@@ -1966,6 +2074,7 @@ anything important with your DSO or an immigration attorney.
                     st.session_state.messages.append(
                         {"role": "assistant", "content": limit_message}
                     )
+                    _persist_chat()
                 else:
                     with st.chat_message("assistant"):
                         with st.spinner("🔍 Researching your question..."):
@@ -1987,6 +2096,7 @@ anything important with your DSO or an immigration attorney.
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer["result"], "answer": answer}
                     )
+                    _persist_chat()
 
                 # The free-question counter in the top bar renders earlier in
                 # this same script pass, before this block -- so without

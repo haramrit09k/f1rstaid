@@ -417,6 +417,14 @@ def _general_rule_answer(opt_phase: Optional[str]) -> str:
     )
 
 
+# Tappable replies for the clarifying question below (phone users shouldn't
+# have to type). Each reply must stay within f1rstaid's direct-answer word
+# limit so condense_question() merges it with the original question.
+_UNEMPLOYMENT_PHASE_OPTIONS = [
+    ("Initial OPT", "I'm on initial OPT"),
+    ("STEM OPT extension", "I'm on the STEM OPT extension"),
+]
+
 _UNEMPLOYMENT_PHASE_CLARIFYING_QUESTION = (
     "I can calculate this for you, but I need to know one more thing: are "
     "you on your initial 12-month post-completion OPT, or on the STEM OPT "
@@ -483,6 +491,7 @@ def _match_unemployment(question: str, llm) -> Optional[Dict]:
             return {
                 "result": _UNEMPLOYMENT_PHASE_CLARIFYING_QUESTION,
                 "source_documents": [_UNEMPLOYMENT_CITATION],
+                "clarify_options": _UNEMPLOYMENT_PHASE_OPTIONS,
             }
         return {
             "result": compute_unemployment_deadline_answer(
@@ -507,6 +516,7 @@ def _match_unemployment(question: str, llm) -> Optional[Dict]:
         return {
             "result": _UNEMPLOYMENT_PHASE_CLARIFYING_QUESTION,
             "source_documents": [_UNEMPLOYMENT_CITATION],
+            "clarify_options": _UNEMPLOYMENT_PHASE_OPTIONS,
         }
 
     return {

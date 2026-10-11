@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import date
 
 import httpx
@@ -17,7 +18,12 @@ from f1rstaid import (
     RelevanceFields,
     _answers_pending_clarification,
     _has_reference_word,
+    _client_ip,
     _increment_daily_shared_key_usage,
+    _increment_ip_usage,
+    _read_ip_usage,
+    PER_IP_DAILY_LIMIT,
+    set_api_key,
     _read_daily_count,
     _read_daily_shared_key_usage,
     ABSTAIN_RESULT,
@@ -882,3 +888,174 @@ def test_retriever_drops_chunks_with_injected_instructions():
     docs = retriever._get_relevant_documents("opt")
 
     assert [d.page_content for d in docs] == ["OPT is 12 months of work authorization."]
+
+
+# --- visitor API keys must never leak into the process-wide environment ---
+
+def test_set_api_key_does_not_touch_os_environ(monkeypatch):
+    import streamlit as st
+
+    monkeypatch.setenv("OPENAI_API_KEY", "owner-key")
+    set_api_key("visitor-key")
+
+    assert st.session_state.OPENAI_API_KEY == "visitor-key"
+    assert os.environ["OPENAI_API_KEY"] == "owner-key"
+
+
+def test_initialize_uses_session_key_without_mutating_environ(monkeypatch):
+    import streamlit as st
+
+    monkeypatch.setenv("OPENAI_API_KEY", "owner-key")
+    st.session_state["OPENAI_API_KEY"] = "visitor-key"
+    try:
+        app = F1rstAidApp(AppConfig())
+        assert app._check_environment() is True
+        assert app.api_key == "visitor-key"
+        assert os.environ["OPENAI_API_KEY"] == "owner-key"
+    finally:
+        st.session_state.pop("OPENAI_API_KEY", None)
+
+
+# --- Redis-backed counters, with file fallback ---
+
+class _FakeRedis:
+    def __init__(self):
+        self.data = {}
+
+    def get(self, key):
+        return self.data.get(key)
+
+    def incr(self, key):
+        self.data[key] = int(self.data.get(key, 0)) + 1
+        return self.data[key]
+
+    def expire(self, key, seconds):
+        pass
+
+
+class _BrokenRedis:
+    def get(self, key):
+        raise ConnectionError("down")
+
+    incr = expire = get
+
+
+def test_shared_key_counter_uses_redis_when_available(monkeypatch, tmp_path):
+    fake = _FakeRedis()
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tmp_path / "usage.json")
+    monkeypatch.setattr(f1rstaid, "_get_redis", lambda: fake)
+
+    assert _increment_daily_shared_key_usage() == 1
+    assert _increment_daily_shared_key_usage() == 2
+    assert _read_daily_shared_key_usage() == 2
+    assert not (tmp_path / "usage.json").exists()  # file untouched
+
+
+def test_shared_key_counter_falls_back_to_file_when_redis_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tmp_path / "usage.json")
+    monkeypatch.setattr(f1rstaid, "_get_redis", lambda: _BrokenRedis())
+
+    assert _increment_daily_shared_key_usage() == 1
+    assert _read_daily_shared_key_usage() == 1
+    assert (tmp_path / "usage.json").exists()
+
+
+def test_get_redis_is_none_without_redis_url(monkeypatch):
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("REDISCLOUD_URL", raising=False)
+    assert f1rstaid._get_redis() is None
+
+
+def test_get_redis_reads_rediscloud_url(monkeypatch):
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("REDISCLOUD_URL", "redis://default:pw@example.invalid:6379")
+    monkeypatch.setattr(f1rstaid, "_redis_client_cache", {})
+
+    assert f1rstaid._get_redis() is not None
+
+
+# --- per-IP daily limit ---
+
+def test_ip_counter_is_per_ip_and_stores_no_raw_ip(monkeypatch, tmp_path):
+    path = tmp_path / "ip.json"
+    monkeypatch.setattr(f1rstaid, "IP_TRACKER_PATH", path)
+    monkeypatch.setattr(f1rstaid, "_get_redis", lambda: None)
+
+    assert _increment_ip_usage("1.2.3.4") == 1
+    assert _increment_ip_usage("1.2.3.4") == 2
+    assert _read_ip_usage("1.2.3.4") == 2
+    assert _read_ip_usage("5.6.7.8") == 0
+    assert "1.2.3.4" not in path.read_text()
+
+
+def test_client_ip_trusts_only_last_forwarded_entry(monkeypatch):
+    from types import SimpleNamespace
+
+    headers = {"X-Forwarded-For": "6.6.6.6, 9.9.9.9"}  # first is client-spoofable
+    monkeypatch.setattr(f1rstaid.st, "context", SimpleNamespace(headers=headers), raising=False)
+    assert _client_ip() == "9.9.9.9"
+
+
+def test_client_ip_none_when_header_missing(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(f1rstaid.st, "context", SimpleNamespace(headers={}), raising=False)
+    assert _client_ip() is None
+
+
+def test_shared_key_limit_reached_by_ip_even_in_fresh_session(monkeypatch, tmp_path):
+    import streamlit as st
+
+    monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", tmp_path / "usage.json")
+    monkeypatch.setattr(f1rstaid, "IP_TRACKER_PATH", tmp_path / "ip.json")
+    monkeypatch.setattr(f1rstaid, "_get_redis", lambda: None)
+    monkeypatch.setattr(f1rstaid, "_client_ip", lambda: "1.2.3.4")
+    for _ in range(PER_IP_DAILY_LIMIT):
+        _increment_ip_usage("1.2.3.4")
+    st.session_state["shared_key_query_count"] = 0  # brand-new incognito session
+
+    limited, message = shared_key_limit_reached()
+
+    assert limited is True
+    assert "network" in message
+
+
+def test_initialize_passes_session_key_to_every_openai_client(monkeypatch):
+    """Answer model, judge model and embeddings must all use the resolved
+    (possibly visitor-supplied) key, never fall back to the owner's env key."""
+    import streamlit as st
+
+    monkeypatch.setenv("OPENAI_API_KEY", "owner-key")
+    st.session_state["OPENAI_API_KEY"] = "visitor-key"
+    chat_keys, embed_keys = [], []
+
+    class _Chat:
+        def __init__(self, **kw):
+            chat_keys.append(kw.get("api_key"))
+
+    class _Embed:
+        def __init__(self, **kw):
+            embed_keys.append(kw.get("api_key"))
+
+    class _FAISS:
+        @staticmethod
+        def load_local(*a, **k):
+            return object()
+
+    class _RetrievalQA:
+        @staticmethod
+        def from_chain_type(**k):
+            return object()
+
+    monkeypatch.setattr(f1rstaid, "ChatOpenAI", _Chat)
+    monkeypatch.setattr(f1rstaid, "OpenAIEmbeddings", _Embed)
+    monkeypatch.setattr(f1rstaid, "FAISS", _FAISS)
+    monkeypatch.setattr(f1rstaid, "RetrievalQA", _RetrievalQA)
+    monkeypatch.setattr(f1rstaid, "SourceWeightedRetriever", lambda **k: object())
+    try:
+        assert F1rstAidApp(AppConfig()).initialize() is True
+    finally:
+        st.session_state.pop("OPENAI_API_KEY", None)
+
+    assert chat_keys == ["visitor-key", "visitor-key"]
+    assert embed_keys == ["visitor-key"]

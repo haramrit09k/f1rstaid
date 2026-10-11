@@ -66,6 +66,7 @@ pygments==2.19.1
 pypdf==5.4.0
 python-dateutil==2.9.0.post0
 python-dotenv==1.0.1
+redis==5.0.8
 pytz==2025.1
 PyYAML==6.0.2
 referencing==0.35.1

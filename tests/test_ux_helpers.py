@@ -193,3 +193,12 @@ def test_a_corrupt_saved_chat_loads_as_nothing():
     chat_id = new_chat_id()
     redis.data[f"f1rstaid:chat:{chat_id}"] = "{not json"
     assert store.load(chat_id) is None
+
+
+def test_school_note_also_follows_the_answer():
+    app = F1rstAidApp(AppConfig())
+    school = [Document(page_content="s", metadata={"type": "web", "source": "https://ois.usc.edu/x"})]
+    text = app.format_answer("Apply early.", school)
+
+    assert text.startswith("Apply early.")
+    assert text.index("Confirm with your own DSO") > text.index("Apply early.")

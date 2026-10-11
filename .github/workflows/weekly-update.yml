@@ -9,6 +9,11 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 45  # fail fast and visibly, not silently for 6h (GitHub's hard ceiling)
+    # Two runs at once (e.g. a manual run during the scheduled one) would both
+    # embed everything and race to push; queue instead of cancelling.
+    concurrency:
+      group: weekly-kb-update
+      cancel-in-progress: false
     permissions:
       contents: write
 
@@ -93,12 +98,10 @@ jobs:
           EOF
 
       - name: Commit updated FAISS index
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add faiss_index/
-          git diff --staged --quiet || git commit -m "chore: weekly knowledge base update [skip ci]"
-          git push
+        # A script, not inline: it re-applies the new index on top of the
+        # latest main and retries, because main often moves during this
+        # 15+ minute run (see the script's header).
+        run: bash .github/scripts/commit_index.sh main
 
       - name: Fail the run if any update step failed
         if: steps.kb_update.outcome == 'failure' || steps.crawler.outcome == 'failure' || steps.ingest_discovered.outcome == 'failure'

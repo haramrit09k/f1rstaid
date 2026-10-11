@@ -276,15 +276,17 @@ def test_federal_register_queries_cover_h1b_and_other_agencies():
 from kb_freshness import SCHOOL_DOMAINS, school_name  # noqa: E402
 
 
-def test_ten_school_sources_each_map_to_a_named_school_and_are_ingested():
-    assert len(sources.SCHOOL_GUIDANCE_SOURCES) == 10
-    assert len(set(sources.SCHOOL_GUIDANCE_SOURCES)) == 10
+def test_school_sources_each_map_to_a_named_school_and_are_ingested():
+    assert len(sources.SCHOOL_GUIDANCE_SOURCES) == 14
+    assert len(set(sources.SCHOOL_GUIDANCE_SOURCES)) == 14
     for url in sources.SCHOOL_GUIDANCE_SOURCES:
         assert url.startswith("https://")
         assert school_name({"source": url}) is not None, url
         assert url in sources.WEBSITE_SOURCES  # full rebuild
         assert url in update_knowledge.WEB_UPDATE_SOURCES  # weekly job
-    assert len(SCHOOL_DOMAINS) == 10
+    # every configured domain is used by at least one source, and vice versa
+    used = {school_name({"source": u}) for u in sources.SCHOOL_GUIDANCE_SOURCES}
+    assert used == set(SCHOOL_DOMAINS.values())
 
 
 def test_school_pages_get_their_own_tier_labelled_with_the_school():
@@ -316,3 +318,17 @@ def test_answer_prompt_says_school_guidance_applies_to_that_school_only():
     system = QA_PROMPT.format_messages(context="c", question="q")[0].content
     assert "one school's own procedures" in system
     assert "take federal rules only from official documents" in system
+
+
+@pytest.mark.parametrize(
+    "url,name",
+    [
+        ("https://oips.gmu.edu/", "George Mason University"),
+        ("https://www.nec.edu/international-students/", "New England College"),
+        ("https://global.utdallas.edu/iss/", "UT Dallas"),
+        ("https://www.uta.edu/international/", "UT Arlington"),
+    ],
+)
+def test_added_schools_are_recognised(url, name):
+    assert school_name({"source": url}) == name
+    assert doc_label({"source": url, "type": "web"}).endswith(f"({name} only), date unknown")

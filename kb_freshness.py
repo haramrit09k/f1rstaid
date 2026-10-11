@@ -191,6 +191,10 @@ SCHOOL_DOMAINS = {
     "purdue.edu": "Purdue University",
     "ucla.edu": "UCLA",
     "bu.edu": "Boston University",
+    "gmu.edu": "George Mason University",
+    "nec.edu": "New England College",
+    "utdallas.edu": "UT Dallas",
+    "uta.edu": "UT Arlington",
 }
 
 

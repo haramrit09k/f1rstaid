@@ -113,7 +113,7 @@ H1B_TRANSITION_SOURCES = [
     "https://www.bal.com/news-articles/",
 ]
 
-# International-student office pages of ten universities with very large
+# International-student office pages of universities: ten with very large
 # international enrollments (chosen from memory of IIE Open Doors rankings,
 # not re-checked). They describe each school's OWN procedures (portals,
 # deadlines, DSO workflow), so the app labels them by school and tells the
@@ -134,6 +134,12 @@ SCHOOL_GUIDANCE_SOURCES = [
     "https://www.purdue.edu/ogsp/",
     "https://www.internationalcenter.ucla.edu/",
     "https://www.bu.edu/isso/",
+    # Schools the project owner and their friends attended (best-guess URLs,
+    # same caveat as above).
+    "https://oips.gmu.edu/",
+    "https://www.nec.edu/international-students/",
+    "https://global.utdallas.edu/iss/",
+    "https://www.uta.edu/international/",
 ]
 
 WEBSITE_SOURCES = WEBSITE_SOURCES + H1B_TRANSITION_SOURCES + SCHOOL_GUIDANCE_SOURCES

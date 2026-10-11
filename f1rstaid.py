@@ -506,8 +506,8 @@ def shared_key_limit_reached() -> Tuple[bool, str]:
     if session_count >= FREE_TRIAL_QUERY_LIMIT:
         return True, (
             f"🚦 You've used all {FREE_TRIAL_QUERY_LIMIT} free trial questions "
-            "for this session. To keep chatting, enter your own OpenAI API key "
-            "in the sidebar -- get one at "
+            "for this session. To keep chatting, tap the 🔑 button at the top and "
+            "enter your own OpenAI API key -- get one at "
             "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
         )
 
@@ -515,16 +515,16 @@ def shared_key_limit_reached() -> Tuple[bool, str]:
     if ip and _read_ip_usage(ip) >= PER_IP_DAILY_LIMIT:
         return True, (
             "🚦 This network has used up today's free trial questions. "
-            "Please try again tomorrow, or enter your own OpenAI API key in "
-            "the sidebar to continue right now -- get one at "
+            "Please try again tomorrow, or tap the 🔑 button at the top and enter "
+            "your own OpenAI API key to continue right now -- get one at "
             "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
         )
 
     if _read_daily_shared_key_usage() >= DAILY_SHARED_KEY_LIMIT:
         return True, (
             "🚦 This app has reached its shared free-trial usage limit for "
-            "today. Please try again tomorrow, or enter your own OpenAI API "
-            "key in the sidebar to continue right now -- get one at "
+            "today. Please try again tomorrow, or tap the 🔑 button at the top "
+            "and enter your own OpenAI API key to continue right now -- get one at "
             "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
         )
 
@@ -921,6 +921,88 @@ APP_CSS = """
 
 @media (max-width: 640px) {
     .source-block { padding: 6px 10px; }
+}
+
+/* --- Layout / mobile ------------------------------------------------------
+   Streamlit's defaults waste a phone screen: a huge title, wide side
+   padding, avatars that squeeze message text, a "Deploy" toolbar, and
+   columns that stack into one long list. */
+[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
+#MainMenu, footer {
+    display: none !important;  /* the sidebar is unused, so no toggle to keep */
+}
+.block-container {
+    max-width: 760px;
+    padding-top: 1.5rem !important;
+    padding-bottom: 7rem !important;  /* room above the pinned chat input */
+}
+[data-testid="stAppViewContainer"] h1 {
+    font-size: clamp(1.6rem, 6vw, 2.3rem) !important;
+    line-height: 1.2 !important;
+    padding: 0.25rem 0 0 0 !important;
+}
+[data-testid="stAppViewContainer"] h3 {
+    font-size: clamp(1.15rem, 4.5vw, 1.4rem) !important;
+}
+
+/* Top bar (About / free-trial & key / new conversation): stays on one row,
+   buttons share the width evenly. */
+.st-key-topbar [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 0.5rem !important;
+}
+.st-key-topbar [data-testid="stColumn"], .st-key-topbar [data-testid="column"] {
+    min-width: 0 !important;
+}
+.st-key-topbar button {
+    font-size: 0.85rem;
+    padding: 0.3rem 0.5rem;
+    white-space: nowrap;
+}
+
+/* 👍 / 👎 under each answer: side by side, not stacked, on a phone. */
+[class*="st-key-feedback_"] [data-testid="stHorizontalBlock"] {
+    flex-wrap: nowrap !important;
+    gap: 0.5rem !important;
+}
+[class*="st-key-feedback_"] [data-testid="stColumn"],
+[class*="st-key-feedback_"] [data-testid="column"] {
+    min-width: 0 !important;
+}
+[class*="st-key-feedback_"] button {
+    min-width: 3rem;
+    min-height: 2.5rem;
+}
+
+/* Example-question chips: 2 x 2 grid with big touch targets. */
+.st-key-chips [data-testid="stHorizontalBlock"] {
+    flex-wrap: wrap !important;
+    gap: 0.5rem !important;
+}
+.st-key-chips [data-testid="stColumn"], .st-key-chips [data-testid="column"] {
+    flex: 1 1 calc(50% - 0.5rem) !important;
+    min-width: calc(50% - 0.5rem) !important;
+}
+.st-key-chips button {
+    min-height: 3rem;
+    font-size: 0.9rem;
+    line-height: 1.25;
+}
+
+@media (max-width: 640px) {
+    .block-container {
+        padding-left: 0.85rem !important;
+        padding-right: 0.85rem !important;
+    }
+    /* The avatar column eats ~20% of the width on a phone. */
+    [data-testid="stChatMessageAvatarUser"],
+    [data-testid="stChatMessageAvatarAssistant"] {
+        display: none !important;
+    }
+    [data-testid="stChatMessage"] {
+        padding: 0.6rem 0.5rem !important;
+        gap: 0.5rem !important;
+    }
 }
 </style>
 """
@@ -1375,8 +1457,8 @@ class F1rstAidApp:
             return {
                 "result": (
                     "⚠️ This app has hit its OpenAI usage limit right now. "
-                    "Please try again later, or enter your own API key in "
-                    "the sidebar to continue immediately."
+                    "Please try again later, or tap the 🔑 button at the top and "
+                    "enter your own API key to continue immediately."
                 ),
                 "source_documents": [],
             }
@@ -1389,14 +1471,32 @@ class F1rstAidApp:
             }
 
     @staticmethod
+    def _short_url_label(parsed, max_length: int = 60) -> str:
+        """Readable link text: host (minus www.) plus the path, trimmed --
+        a 150-character raw URL wrapping over five lines on a phone helped
+        nobody."""
+        host = (parsed.netloc or "").removeprefix("www.")
+        path = parsed.path.rstrip("/")
+        label = host + path
+        return label if len(label) <= max_length else label[: max_length - 1] + "…"
+
+    @staticmethod
     def _get_source_link(source: str, doc_type: str) -> str:
         """Generate appropriate hyperlink based on source type."""
         try:
-            if doc_type == "web" or doc_type == "reddit":
-                # Check if URL is valid
+            if doc_type in ("web", "reddit", "news"):
+                # Only real web links: this markup is rendered with
+                # unsafe_allow_html and the URL can come from scraped or RSS
+                # content, so reject other schemes (javascript:) and escape
+                # everything that goes into the attribute / link text.
                 parsed = urlparse(source)
-                if parsed.scheme and parsed.netloc:
-                    return f"<a href='{source}' target='_blank'>{source} 🔗</a>"
+                if parsed.scheme in ("http", "https") and parsed.netloc:
+                    href = escape(source, quote=True)
+                    label = escape(F1rstAidApp._short_url_label(parsed))
+                    return (
+                        f"<a href='{href}' target='_blank' "
+                        f"rel='noopener noreferrer'>{label} 🔗</a>"
+                    )
                 else:
                     return "Invalid URL ❌"
             elif doc_type == "pdf":
@@ -1556,8 +1656,6 @@ class F1rstAidApp:
             answer.get("source_documents", []) if answer_type in ("rule", "rag") else []
         )
 
-        st.markdown("### 📝 Answer")
-
         badge = _ANSWER_BADGES.get(answer_type)
         if badge:
             label, tooltip, css_class = badge
@@ -1628,6 +1726,36 @@ class F1rstAidApp:
                 st.caption("PDF links open in your default PDF viewer.")
 
 
+STALE_KB_DAYS = 21  # weekly refresh: three weeks old means runs were missed
+
+
+def freshness_notice(last_updated: str, today: date) -> Tuple[str, bool]:
+    """(text, is_stale) for the knowledge-base freshness line. `last_updated`
+    is the human-readable date from get_knowledge_base_last_updated()
+    ("August 17, 2026"). An unparseable date is shown as-is, not flagged."""
+    try:
+        age = (today - datetime.strptime(last_updated, "%B %d, %Y").date()).days
+    except (ValueError, TypeError):
+        return f"🗓️ Knowledge base last updated {last_updated}.", False
+    if age > STALE_KB_DAYS:
+        return (
+            f"⚠️ Knowledge base last updated {last_updated} ({age} days ago): "
+            "recent changes may be missing.",
+            True,
+        )
+    return f"🗓️ Knowledge base updated {last_updated}.", False
+
+
+def trial_status_label(using_own_key: bool, remaining: int, key_available: bool) -> str:
+    """Short label for the free-trial / API-key button at the top of the page
+    (this is what a phone user sees instead of the hidden sidebar)."""
+    if using_own_key:
+        return "🔑 Your key"
+    if not key_available:
+        return "🔑 Add key"
+    return f"🎟️ {remaining} free left"
+
+
 def get_api_key() -> Optional[str]:
     """Get API key from session state or environment."""
     if "OPENAI_API_KEY" in st.session_state:
@@ -1670,15 +1798,16 @@ def render_feedback_widget(msg_index: int, answer: Dict):
             st.caption("👎 Thanks for the feedback!")
         return
 
-    col1, col2, _ = st.columns([1, 1, 10])
-    with col1:
-        if st.button("👍", key=f"thumbs_up_{msg_index}"):
-            feedback_given[msg_index] = "up"
-            st.rerun()
-    with col2:
-        if st.button("👎", key=f"thumbs_down_{msg_index}"):
-            st.session_state[f"show_feedback_form_{msg_index}"] = True
-            st.rerun()
+    with st.container(key=f"feedback_{msg_index}"):
+        col1, col2, _ = st.columns([1, 1, 4])
+        with col1:
+            if st.button("👍", key=f"thumbs_up_{msg_index}"):
+                feedback_given[msg_index] = "up"
+                st.rerun()
+        with col2:
+            if st.button("👎", key=f"thumbs_down_{msg_index}"):
+                st.session_state[f"show_feedback_form_{msg_index}"] = True
+                st.rerun()
 
     if st.session_state.get(f"show_feedback_form_{msg_index}"):
         comment = st.text_area(
@@ -1701,123 +1830,124 @@ def render_feedback_widget(msg_index: int, answer: Dict):
 def main():
     """Main application entry point."""
     try:
-        # Setup Streamlit UI
+        try:
+            st.set_page_config(
+                page_title="F1rstAid: F-1 visa helper",
+                page_icon="🎓",
+                layout="centered",
+                # Nothing essential lives in the sidebar any more -- on a
+                # phone it hides behind a tiny arrow nobody finds.
+                initial_sidebar_state="collapsed",
+            )
+        except Exception:
+            pass  # already configured by a host script
+
         st.markdown(APP_CSS, unsafe_allow_html=True)
-        st.title("🎓 F1rstAid: Your F-1 Visa Helper")
+        st.title("🎓 F1rstAid")
         st.caption(
-            "An unofficial assistant for F-1 student visa questions -- "
-            "not a substitute for advice from your DSO or an immigration attorney."
+            "Your F-1 visa helper. Unofficial, not legal advice: "
+            "confirm anything important with your DSO."
         )
 
-        # API Key Input Section
-        with st.sidebar:
-            with st.expander("ℹ️ About F1rstAid", expanded=True):
-                st.markdown(
-                    """
-**What this is:** A RAG-based assistant over official F-1 guidance
-(USCIS/DHS/Study in the States) plus Reddit community experiences, with a
-few exact, rule-based answers (like OPT unemployment-day limits and the
-60-day grace period) computed directly instead of guessed by an LLM.
+        # The label is computed from last run's widget state so it is right on
+        # the very run that changes it (the key box's value is already in
+        # session_state when the script reruns).
+        typed_key = bool(st.session_state.get("api_key_input"))
+        remaining = max(
+            0,
+            FREE_TRIAL_QUERY_LIMIT - st.session_state.get("shared_key_query_count", 0),
+        )
+        has_messages = bool(st.session_state.get("messages"))
 
-**What this isn't:** Legal advice. Immigration rules change and individual
-cases vary -- always confirm anything important with your DSO or a
-qualified immigration attorney before acting on it.
+        with st.container(key="topbar"):
+            columns = st.columns(3 if has_messages else 2)
+            about_col, key_col = columns[0], columns[1]
 
-**Tips:**
-- Mention specifics (dates, form numbers, your OPT phase) for a sharper answer.
-- Official sources are weighted above Reddit posts, but Reddit answers are
-  still shown separately when relevant -- read them as anecdotes, not policy.
-                    """
-                )
+            with about_col:
+                with st.popover("ℹ️ About", use_container_width=True):
+                    st.markdown(
+                        """
+**What this is:** An assistant over official F-1 guidance (USCIS, DHS/Study in
+the States) plus news, law-firm commentary, university international offices
+and Reddit experiences -- ranked with official sources first. A few exact
+answers (OPT unemployment days, the 60-day grace period) are computed
+directly instead of guessed.
 
-            st.markdown("### 🔑 API Access")
-            st.caption(
-                f"Try it free -- {FREE_TRIAL_QUERY_LIMIT} questions per "
-                "session on the shared key, no setup needed. Have your own "
-                "OpenAI key? Add it below for unlimited questions."
-            )
-            api_key = st.text_input(
-                "Your own OpenAI API key (optional):",
-                type="password",
-                help=(
-                    "Get one at https://platform.openai.com/api-keys -- only "
-                    "needed if you want unlimited questions instead of the "
-                    "free trial."
-                ),
-                key="api_key_input"
-            )
+**What this isn't:** Legal advice. Rules change and cases vary -- confirm
+anything important with your DSO or an immigration attorney.
 
-            if not api_key:
-                # Field cleared (or never filled): forget any key typed
-                # earlier so the shared key and its limits apply again.
-                st.session_state.pop("OPENAI_API_KEY", None)
+**Tips:** mention dates, form numbers and your OPT phase for a sharper answer.
+                        """
+                    )
+                    st.caption(
+                        "Built with ❤️ by "
+                        "[@haramrit09k](https://github.com/haramrit09k) · "
+                        "[LinkedIn](https://linkedin.com/in/haramrit09k)"
+                    )
 
-            if api_key:
-                set_api_key(api_key)
-                st.session_state["using_own_key"] = True
-                st.success("✅ Using your own key -- no question limit.")
-            elif get_api_key():
-                # A key is already available from a local .env or a prior
-                # session-state set (e.g. loaded via load_dotenv() at import
-                # time) -- the manual field being empty just means the user
-                # hasn't (re-)typed one, not that no key exists. This is the
-                # shared/owner key, so the free-trial limits apply -- see
-                # shared_key_limit_reached().
-                st.session_state["using_own_key"] = False
-                remaining = max(
-                    0,
-                    FREE_TRIAL_QUERY_LIMIT - st.session_state.get("shared_key_query_count", 0),
-                )
-                st.info(
-                    f"🎟️ Using the shared trial key -- {remaining} of "
-                    f"{FREE_TRIAL_QUERY_LIMIT} free questions left this session."
-                )
-            else:
-                # Only reachable when no shared key is configured for this
-                # deployment at all (e.g. running locally with no .env) --
-                # on the live deployment, get_api_key() above always finds
-                # the shared key, so a visitor never actually hits this.
-                st.warning(
-                    "⚠️ No shared trial key is configured for this "
-                    "deployment. Please enter your own OpenAI API key above "
-                    "to continue."
-                )
-                return
+            with key_col:
+                with st.popover(
+                    trial_status_label(typed_key, remaining, bool(get_api_key())),
+                    use_container_width=True,
+                ):
+                    st.markdown("**Free trial & API key**")
+                    st.caption(
+                        f"Try it free: {FREE_TRIAL_QUERY_LIMIT} questions per "
+                        "session, no setup. Have your own OpenAI key? Add it "
+                        "below for unlimited questions."
+                    )
+                    api_key = st.text_input(
+                        "Your own OpenAI API key (optional)",
+                        type="password",
+                        help=(
+                            "Get one at https://platform.openai.com/api-keys -- "
+                            "only needed for unlimited questions."
+                        ),
+                        key="api_key_input",
+                    )
 
-            st.markdown("""
-            ### ℹ️ About API Keys
-            - **Shared trial key**: a few free questions per session, plus a
-              daily cap shared across everyone, so it doesn't run dry for
-              other visitors.
-            - **Your own key**: unlimited questions, billed to your own
-              OpenAI account. Stored only in this browser session -- never
-              saved or logged.
-            - Get a key at [OpenAI Platform](https://platform.openai.com/api-keys),
-              check [pricing](https://openai.com/pricing).
-            """)
+                    if not api_key:
+                        # Field cleared (or never filled): forget any key
+                        # typed earlier so the shared key and its limits
+                        # apply again.
+                        st.session_state.pop("OPENAI_API_KEY", None)
 
-            if st.session_state.get("messages"):
-                st.markdown("---")
-                if st.button("🔄 New conversation", use_container_width=True):
-                    st.session_state.messages = []
-                    st.rerun()
+                    if api_key:
+                        set_api_key(api_key)
+                        st.session_state["using_own_key"] = True
+                        st.success("✅ Using your own key -- no question limit.")
+                    elif get_api_key():
+                        # A key is already available from a local .env or the
+                        # server's config -- the field being empty just means
+                        # the visitor hasn't typed one. This is the
+                        # shared/owner key, so the free-trial limits apply
+                        # (see shared_key_limit_reached()).
+                        st.session_state["using_own_key"] = False
+                        st.info(
+                            f"🎟️ {remaining} of {FREE_TRIAL_QUERY_LIMIT} free "
+                            "questions left this session."
+                        )
+                    else:
+                        # Only reachable when no shared key is configured for
+                        # this deployment at all (e.g. running locally with no
+                        # .env).
+                        st.warning(
+                            "⚠️ No shared trial key is configured. Enter your "
+                            "own OpenAI API key above to continue."
+                        )
 
-            # Footer lives in the sidebar, not the main pane: st.chat_input
-            # is pinned to the bottom of the viewport regardless of where in
-            # the script it's called, so a footer in normal document flow in
-            # the main pane ends up floating in a large empty gap above it
-            # on any page that doesn't have a full screen of conversation
-            # yet -- which is most first-time visits. Plain st.caption
-            # instead of the old custom-colored HTML card -- that card's
-            # fixed light background/gradient was sized for a wide main-pane
-            # banner and would look like a mismatched light box in the
-            # narrower sidebar; a native caption is theme-aware for free.
-            st.markdown("---")
-            st.caption(
-                "Built with ❤️ by "
-                "[@haramrit09k](https://github.com/haramrit09k) · "
-                "[LinkedIn](https://linkedin.com/in/haramrit09k)"
-            )
+                    st.caption(
+                        "Your key is kept only in this browser session, never "
+                        "saved or logged. Get one at "
+                        "[OpenAI Platform](https://platform.openai.com/api-keys); "
+                        "see [pricing](https://openai.com/pricing)."
+                    )
+
+            if has_messages:
+                with columns[2]:
+                    if st.button("🔄 New chat", use_container_width=True):
+                        st.session_state.messages = []
+                        st.rerun()
 
         # Initialize session state
         if "messages" not in st.session_state:
@@ -1832,10 +1962,11 @@ qualified immigration attorney before acting on it.
 
             last_updated = app.get_knowledge_base_last_updated()
             if last_updated:
-                st.caption(
-                    f"🗓️ Knowledge base last refreshed: {last_updated}. "
-                    "Recent policy changes may not be reflected yet."
-                )
+                notice, stale = freshness_notice(last_updated, date.today())
+                if stale:
+                    st.warning(notice)
+                else:
+                    st.caption(notice)
 
             # Clickable example questions -- there's no other onboarding
             # here, so a first-time visitor otherwise faces a blank input.
@@ -1845,14 +1976,25 @@ qualified immigration attorney before acting on it.
             # pre-filling an input box -- st.chat_input doesn't support a
             # prefillable value the way the old st.text_input did.
             if not st.session_state.messages:
-                st.write("Ask me anything about F-1 visas!")
-                st.caption("Not sure where to start? Try one of these:")
-                chip_cols = st.columns(len(EXAMPLE_QUESTIONS))
-                for i, (chip_label, full_question) in enumerate(EXAMPLE_QUESTIONS):
-                    with chip_cols[i]:
-                        if st.button(chip_label, key=f"example_{i}", use_container_width=True):
-                            st.session_state["_pending_prompt"] = full_question
-                            st.rerun()
+                st.subheader("What do you want to know?")
+                with st.container(key="chips"):
+                    for row_start in range(0, len(EXAMPLE_QUESTIONS), 2):
+                        row = st.columns(2)
+                        for offset, (chip_label, full_question) in enumerate(
+                            EXAMPLE_QUESTIONS[row_start:row_start + 2]
+                        ):
+                            with row[offset]:
+                                if st.button(
+                                    chip_label,
+                                    key=f"example_{row_start + offset}",
+                                    use_container_width=True,
+                                ):
+                                    st.session_state["_pending_prompt"] = full_question
+                                    st.rerun()
+                st.caption(
+                    "Or type your own question below. Dates, form numbers and "
+                    "your OPT phase (initial or STEM) help me answer precisely."
+                )
 
             # Replay the conversation so far. Each assistant turn stores its
             # full raw answer dict (not just the text), so display_answer()
@@ -1868,7 +2010,7 @@ qualified immigration attorney before acting on it.
                     else:
                         st.markdown(msg["content"])
 
-            prompt = st.chat_input("Ask your F-1 visa question...", max_chars=MAX_QUESTION_CHARS)
+            prompt = st.chat_input("Ask about OPT, CPT, travel, taxes…", max_chars=MAX_QUESTION_CHARS)
             prompt = prompt or st.session_state.pop("_pending_prompt", None)
 
             if prompt:
@@ -1917,17 +2059,15 @@ qualified immigration attorney before acting on it.
                         {"role": "assistant", "content": answer["result"], "answer": answer}
                     )
 
-                # The sidebar (which shows the remaining free-question
-                # count) renders earlier in this same script pass, before
-                # this block -- so without forcing another rerun, it always
-                # shows the count as of *before* the question just asked,
-                # not reflecting it until some later, unrelated interaction
-                # triggers the next rerun. Forcing one here makes the
-                # sidebar correct immediately, every time.
+                # The free-question counter in the top bar renders earlier in
+                # this same script pass, before this block -- so without
+                # forcing another rerun it would show the count as of
+                # *before* the question just asked. Forcing one here makes it
+                # correct immediately, every time.
                 st.rerun()
 
         else:
-            st.error("Please provide an OpenAI API key to use F1rstAid")
+            st.error("Tap 🔑 Add key at the top to enter an OpenAI API key and use F1rstAid.")
             return
 
     except Exception as e:

@@ -176,13 +176,45 @@ COMMENTARY_DOMAINS = (
 )
 
 
+# University international-office sites -> school name. Their pages describe
+# that school's own procedures, so they get their own tier and a label naming
+# the school (see doc_label); keep in sync with
+# config.sources.SCHOOL_GUIDANCE_SOURCES (a test checks every URL there maps).
+SCHOOL_DOMAINS = {
+    "nyu.edu": "NYU",
+    "northeastern.edu": "Northeastern University",
+    "columbia.edu": "Columbia University",
+    "asu.edu": "Arizona State University",
+    "usc.edu": "USC",
+    "illinois.edu": "University of Illinois Urbana-Champaign",
+    "cmu.edu": "Carnegie Mellon University",
+    "purdue.edu": "Purdue University",
+    "ucla.edu": "UCLA",
+    "bu.edu": "Boston University",
+}
+
+
+def _host(metadata: Dict) -> str:
+    return (urlparse(metadata.get("source", "")).hostname or "").lower()
+
+
+def school_name(metadata: Dict) -> Optional[str]:
+    host = _host(metadata)
+    for domain, name in SCHOOL_DOMAINS.items():
+        if host == domain or host.endswith("." + domain):
+            return name
+    return None
+
+
 def source_tier(metadata: Dict) -> str:
     """Trust tier used for ranking and labelling: pdf, web (official),
     commentary, news or reddit. Anything unrecognised falls back to its
     stored type."""
     doc_type = metadata.get("type")
     if doc_type == "web":
-        host = (urlparse(metadata.get("source", "")).hostname or "").lower()
+        if school_name(metadata):
+            return "school"
+        host = _host(metadata)
         if any(host == d or host.endswith("." + d) for d in COMMENTARY_DOMAINS):
             return "commentary"
     return doc_type or "unknown"
@@ -192,6 +224,7 @@ _TYPE_LABELS = {
     "pdf": "official document",
     "web": "official/web page",
     "commentary": "law-firm/expert commentary",
+    "school": "university international-office guidance",
     "news": "news report",
     "reddit": "community post (Reddit)",
 }
@@ -200,7 +233,10 @@ _TYPE_LABELS = {
 def doc_label(metadata: Dict) -> str:
     """Short label shown to the model with each chunk, e.g.
     'news report, published 2026-09-30'."""
-    label = _TYPE_LABELS.get(source_tier(metadata), "document")
+    tier = source_tier(metadata)
+    label = _TYPE_LABELS.get(tier, "document")
+    if tier == "school":
+        label = f"{label} ({school_name(metadata)} only)"
     published = published_date(metadata)
     if published:
         return f"{label}, published {published.date().isoformat()}"

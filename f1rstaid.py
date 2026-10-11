@@ -159,6 +159,11 @@ _QA_SYSTEM_PROMPT = (
     "so. News about a proposed or pending change is NOT in effect unless an "
     "official document confirms it -- say that clearly, and give the date when "
     "relying on a news report.\n"
+    "- A document labelled as university international-office guidance describes "
+    "that one school's own procedures (portals, deadlines, forms). Never present "
+    "it as a general rule or assume the student attends that school: name the "
+    "school, say it applies to students there, and take federal rules only from "
+    "official documents.\n"
     "- Only ever discuss F-1 student visa matters. For anything else, say "
     "exactly: \"I don't have enough information to answer this accurately — "
     "please consult your DSO or visit uscis.gov directly.\"\n\n"
@@ -292,7 +297,14 @@ CONDENSE_PROMPT = PromptTemplate(
 # "commentary" = law firms / associations / tax blogs (see
 # kb_freshness.COMMENTARY_DOMAINS): useful but secondary to the government
 # pages, so it ranks below them and above news.
-SOURCE_TYPE_WEIGHTS = {"pdf": 2.0, "web": 2.2, "commentary": 1.5, "news": 1.2, "reddit": 0.5}
+SOURCE_TYPE_WEIGHTS = {
+    "pdf": 2.0,
+    "web": 2.2,
+    "school": 1.8,  # a university international office: authoritative about ITS procedures only
+    "commentary": 1.5,
+    "news": 1.2,
+    "reddit": 0.5,
+}
 DEFAULT_SOURCE_WEIGHT = 1.0
 
 # A few starter questions so a first-time visitor isn't staring at a blank
@@ -1439,8 +1451,8 @@ class F1rstAidApp:
     @staticmethod
     def _sort_by_source_priority(docs: List[Document]) -> List[Document]:
         """Re-sort retrieved docs so official sources appear before Reddit."""
-        priority = {"pdf": 0, "web": 1, "commentary": 2, "news": 3, "reddit": 4}
-        return sorted(docs, key=lambda d: priority.get(source_tier(d.metadata), 5))
+        priority = {"pdf": 0, "web": 1, "school": 2, "commentary": 3, "news": 4, "reddit": 5}
+        return sorted(docs, key=lambda d: priority.get(source_tier(d.metadata), 6))
 
     def format_answer(self, result: str, sources: List[Document]) -> str:
         """Format answer with source context."""

@@ -269,3 +269,50 @@ def test_federal_register_queries_cover_h1b_and_other_agencies():
     agencies = {a for _, ags in update_knowledge.FEDERAL_REGISTER_QUERIES for a in ags}
     assert '"H-1B"' in terms and '"specialty occupation"' in terms
     assert {"homeland-security-department", "labor-department", "state-department"} <= agencies
+
+
+# --- school international-office sources -------------------------------------------
+
+from kb_freshness import SCHOOL_DOMAINS, school_name  # noqa: E402
+
+
+def test_ten_school_sources_each_map_to_a_named_school_and_are_ingested():
+    assert len(sources.SCHOOL_GUIDANCE_SOURCES) == 10
+    assert len(set(sources.SCHOOL_GUIDANCE_SOURCES)) == 10
+    for url in sources.SCHOOL_GUIDANCE_SOURCES:
+        assert url.startswith("https://")
+        assert school_name({"source": url}) is not None, url
+        assert url in sources.WEBSITE_SOURCES  # full rebuild
+        assert url in update_knowledge.WEB_UPDATE_SOURCES  # weekly job
+    assert len(SCHOOL_DOMAINS) == 10
+
+
+def test_school_pages_get_their_own_tier_labelled_with_the_school():
+    meta = {"source": "https://isso.columbia.edu/content/opt", "type": "web"}
+    assert source_tier(meta) == "school"
+    assert doc_label({**meta, "published": "2026-09-30T00:00:00+00:00"}) == (
+        "university international-office guidance (Columbia University only), published 2026-09-30"
+    )
+    # look-alike domains and federal pages are not schools
+    assert source_tier({"source": "https://notcolumbia.edu/x", "type": "web"}) == "web"
+    assert source_tier({"source": "https://www.uscis.gov/i-765", "type": "web"}) == "web"
+
+
+def test_school_tier_ranks_between_federal_pages_and_commentary():
+    from f1rstaid import SOURCE_TYPE_WEIGHTS, F1rstAidApp as App
+
+    assert SOURCE_TYPE_WEIGHTS["web"] > SOURCE_TYPE_WEIGHTS["school"] > SOURCE_TYPE_WEIGHTS["commentary"]
+    docs = [
+        Document(page_content="c", metadata={"source": "https://www.murthy.com/x", "type": "web"}),
+        Document(page_content="s", metadata={"source": "https://ois.usc.edu/x", "type": "web"}),
+        Document(page_content="f", metadata={"source": "https://www.uscis.gov/x", "type": "web"}),
+    ]
+    assert [d.page_content for d in App._sort_by_source_priority(docs)] == ["f", "s", "c"]
+
+
+def test_answer_prompt_says_school_guidance_applies_to_that_school_only():
+    from f1rstaid import QA_PROMPT
+
+    system = QA_PROMPT.format_messages(context="c", question="q")[0].content
+    assert "one school's own procedures" in system
+    assert "take federal rules only from official documents" in system

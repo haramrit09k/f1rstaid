@@ -113,9 +113,27 @@ H1B_TRANSITION_SOURCES = [
     "https://www.bal.com/news-articles/",
 ]
 
-# Add the specific pages your school's international office publishes (OPT /
-# CPT / cap-gap procedures differ by DSO). Left empty on purpose: deep links
-# are school-specific and could not be verified.
-SCHOOL_GUIDANCE_SOURCES: list = []
+# International-student office pages of ten universities with very large
+# international enrollments (chosen from memory of IIE Open Doors rankings,
+# not re-checked). They describe each school's OWN procedures (portals,
+# deadlines, DSO workflow), so the app labels them by school and tells the
+# model they apply only to that school -- see kb_freshness.SCHOOL_DOMAINS,
+# which must have an entry for every domain used here (a test enforces it).
+# Root/landing URLs, best effort: they could not be fetched when added, so a
+# 404 in the weekly run's log means the page moved -- replace it with the
+# school's current OPT/CPT page. Add your own school here for the most
+# useful answers.
+SCHOOL_GUIDANCE_SOURCES = [
+    "https://www.nyu.edu/students/student-information-and-resources/global-services.html",
+    "https://international.northeastern.edu/ogs/",
+    "https://isso.columbia.edu/",
+    "https://issc.asu.edu/",
+    "https://ois.usc.edu/",
+    "https://isss.illinois.edu/",
+    "https://www.cmu.edu/oie/",
+    "https://www.purdue.edu/ogsp/",
+    "https://www.internationalcenter.ucla.edu/",
+    "https://www.bu.edu/isso/",
+]
 
 WEBSITE_SOURCES = WEBSITE_SOURCES + H1B_TRANSITION_SOURCES + SCHOOL_GUIDANCE_SOURCES

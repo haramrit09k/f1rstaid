@@ -23,7 +23,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # The three update steps use continue-on-error so one failing doesn't
+      # skip the others or the commit of whatever did succeed; the final
+      # step turns any failure back into a red run. Without that, an
+      # exhausted OpenAI balance (HTTP 429 insufficient_quota) was logged and
+      # swallowed, and every run stayed green for ~7 weeks while committing
+      # nothing.
       - name: Run knowledge base update (Reddit + web + RSS)
+        id: kb_update
+        continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           REDDIT_CLIENT_ID: ${{ secrets.REDDIT_CLIENT_ID }}
@@ -32,11 +40,15 @@ jobs:
         run: python update_knowledge.py
 
       - name: Run autonomous URL discovery crawler
+        id: crawler
+        continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python -m crawler.crawler
 
       - name: Ingest newly discovered URLs
+        id: ingest_discovered
+        continue-on-error: true
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -74,6 +86,8 @@ jobs:
 
               if append_to_vector_store(chunks):
                   print(f"Ingested {len(chunks)} chunks from discovered URLs")
+              else:
+                  raise SystemExit("Failed to append discovered URLs to the vector store")
 
           asyncio.run(ingest_discovered())
           EOF
@@ -85,3 +99,9 @@ jobs:
           git add faiss_index/
           git diff --staged --quiet || git commit -m "chore: weekly knowledge base update [skip ci]"
           git push
+
+      - name: Fail the run if any update step failed
+        if: steps.kb_update.outcome == 'failure' || steps.crawler.outcome == 'failure' || steps.ingest_discovered.outcome == 'failure'
+        run: |
+          echo "::error::Knowledge base update did not complete cleanly (kb_update=${{ steps.kb_update.outcome }}, crawler=${{ steps.crawler.outcome }}, ingest=${{ steps.ingest_discovered.outcome }}). Most common cause: OpenAI credits exhausted (HTTP 429 insufficient_quota) - check the step logs."
+          exit 1

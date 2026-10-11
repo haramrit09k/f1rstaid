@@ -5,6 +5,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_openai import OpenAIEmbeddings
 
 from ingest import ContentProcessor
+import update_knowledge
 from update_knowledge import _write_last_updated, append_to_vector_store
 
 @pytest.mark.live
@@ -48,3 +49,50 @@ def test_document_preprocessing(mock_documents):
         assert processed_text != ""
         if "F student" in doc.page_content:
             assert "F-1 student" in processed_text
+
+def test_append_failure_is_recorded_as_a_real_error(tmp_path, mock_documents, monkeypatch):
+    """A failed append (e.g. OpenAI 429 insufficient_quota) must be recorded
+    so main() exits non-zero -- it used to be log-only, leaving the weekly
+    run green while nothing was committed."""
+    monkeypatch.setattr(update_knowledge, "_errors", [])
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise RuntimeError("insufficient_quota")
+
+    monkeypatch.setattr(update_knowledge, "OpenAIEmbeddings", _Boom)
+
+    assert append_to_vector_store(mock_documents, vector_store_path=str(tmp_path)) is False
+    assert any("insufficient_quota" in e for e in update_knowledge._errors)
+
+
+def test_main_returns_nonzero_when_errors_were_recorded(monkeypatch):
+    async def _fake_updates():
+        update_knowledge._errors.append("simulated failure")
+        return [False, False, False]
+
+    monkeypatch.setattr(update_knowledge, "_errors", [])
+    monkeypatch.setattr(update_knowledge, "_run_all_updates", _fake_updates)
+
+    assert update_knowledge.main() == 1
+
+
+def test_main_returns_zero_when_nothing_failed(monkeypatch):
+    async def _fake_updates():
+        return [True, False, False]
+
+    monkeypatch.setattr(update_knowledge, "_errors", [])
+    monkeypatch.setattr(update_knowledge, "_run_all_updates", _fake_updates)
+
+    assert update_knowledge.main() == 0
+
+
+def test_main_returns_zero_when_there_was_simply_nothing_new(monkeypatch):
+    """No new content is not an error -- only recorded failures are."""
+    async def _fake_updates():
+        return [False, False, False]
+
+    monkeypatch.setattr(update_knowledge, "_errors", [])
+    monkeypatch.setattr(update_knowledge, "_run_all_updates", _fake_updates)
+
+    assert update_knowledge.main() == 0

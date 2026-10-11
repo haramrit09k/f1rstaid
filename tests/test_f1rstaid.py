@@ -19,6 +19,7 @@ from f1rstaid import (
     _increment_daily_shared_key_usage,
     _read_daily_count,
     _read_daily_shared_key_usage,
+    answer_counts_toward_free_trial,
     classify_answer,
     create_feedback_issue,
     shared_key_limit_reached,
@@ -483,6 +484,19 @@ def test_daily_usage_counter_handles_missing_or_corrupt_file(tmp_path, monkeypat
     corrupt_path.write_text("not valid json{{{")
     monkeypatch.setattr(f1rstaid, "USAGE_TRACKER_PATH", corrupt_path)
     assert _read_daily_shared_key_usage() == 0
+
+
+# --- failed answers don't use up a free-trial question ---
+
+def test_failed_answers_do_not_count_toward_free_trial():
+    rate_limited = {"result": "⚠️ This app has hit its OpenAI usage limit right now.", "source_documents": []}
+    errored = {"result": "Error processing request. Please try again.", "source_documents": []}
+    assert answer_counts_toward_free_trial(rate_limited) is False
+    assert answer_counts_toward_free_trial(errored) is False
+
+
+def test_real_answers_count_toward_free_trial():
+    assert answer_counts_toward_free_trial({"result": "You have 90 days.", "source_documents": []}) is True
 
 
 # --- shared_key_limit_reached: session + daily checks together ---

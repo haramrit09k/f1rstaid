@@ -556,6 +556,13 @@ def classify_answer(answer: Dict) -> str:
     return "rule"
 
 
+def answer_counts_toward_free_trial(answer: Dict) -> bool:
+    """False for answers that failed on our side (OpenAI quota/rate limit or
+    a processing error) -- the visitor got nothing, so it shouldn't use up
+    one of their free-trial questions or the shared daily cap."""
+    return classify_answer(answer) not in ("rate_limited", "error")
+
+
 # Injected once per script run (see main()) rather than once per source
 # block, which is what the old code did -- format_sources() used to embed
 # a full <style> tag in its return value and got called twice per answer
@@ -1484,16 +1491,19 @@ qualified immigration attorney before acting on it.
                         {"role": "assistant", "content": limit_message}
                     )
                 else:
-                    if not using_own_key:
-                        st.session_state["shared_key_query_count"] = (
-                            st.session_state.get("shared_key_query_count", 0) + 1
-                        )
-                        _increment_daily_shared_key_usage()
-
                     with st.chat_message("assistant"):
                         with st.spinner("🔍 Researching your question..."):
                             answer = app.get_answer(prompt, chat_history=chat_history)
                         app.display_answer(answer)
+
+                    # Counted after the call, and only if it produced a
+                    # real answer -- a quota outage or processing error
+                    # shouldn't eat into a visitor's free trial.
+                    if not using_own_key and answer_counts_toward_free_trial(answer):
+                        st.session_state["shared_key_query_count"] = (
+                            st.session_state.get("shared_key_query_count", 0) + 1
+                        )
+                        _increment_daily_shared_key_usage()
 
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer["result"], "answer": answer}

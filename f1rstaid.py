@@ -26,7 +26,7 @@ from typing import Optional
 
 import rules_engine
 from content_safety import looks_like_prompt_injection
-from kb_freshness import date_caption, doc_label, freshness_multiplier, source_tier
+from kb_freshness import date_caption, doc_label, freshness_multiplier, school_name, source_tier
 
 # Picks up OPENAI_API_KEY (and anything else) from a local .env if present,
 # so the app works without the user having to export it manually into the
@@ -160,9 +160,14 @@ _QA_SYSTEM_PROMPT = (
     "official document confirms it -- say that clearly, and give the date when "
     "relying on a news report.\n"
     "- A document labelled as university international-office guidance describes "
-    "that one school's own procedures (portals, deadlines, forms). Never present "
-    "it as a general rule or assume the student attends that school: name the "
-    "school, say it applies to students there, and take federal rules only from "
+    "that one school's own procedures (portals, deadlines, forms). Never assume "
+    "the student attends that school, and never present one school's practice as "
+    "a general rule: name the school and say it applies to students there. If TWO "
+    "OR MORE different schools in the context say the same thing, you may say it "
+    "is common practice at universities (naming them, e.g. 'at Columbia and "
+    "USC'), but make clear it is common practice and not law, and tell the "
+    "student to confirm with their own DSO. Where schools differ, attribute each "
+    "detail to its school separately. Always take federal rules only from "
     "official documents.\n"
     "- Only ever discuss F-1 student visa matters. For anything else, say "
     "exactly: \"I don't have enough information to answer this accurately — "
@@ -598,9 +603,21 @@ def create_feedback_issue(
         return False
 
 
+# School guidance is only useful for generalising ("most universities do X")
+# when the model can compare several schools, but with k=3 the top chunks are
+# usually federal pages or a single school. So: at most ONE chunk per school
+# in the results, and up to MAX_EXTRA_SCHOOL_DOCS additional chunks from
+# schools not yet represented, provided they are nearly as relevant as the
+# last regular result (within EXTRA_SCHOOL_DISTANCE_SLACK of its adjusted
+# distance), so unrelated school pages are never added as filler.
+MAX_EXTRA_SCHOOL_DOCS = 2
+EXTRA_SCHOOL_DISTANCE_SLACK = 1.25
+
+
 class SourceWeightedRetriever(BaseRetriever):
     """Retrieves a wider candidate pool via similarity search, then re-ranks
-    by source-type weight before truncating to k."""
+    by source-type weight before truncating to k (plus the school-diversity
+    rule above)."""
 
     db: FAISS
     k: int = 3
@@ -623,10 +640,36 @@ class SourceWeightedRetriever(BaseRetriever):
         # Reddit post or web page) before they reach the answer prompt --
         # also protects an index built before ingest started screening.
         safe = [
-            (doc, score)
+            (doc, adjusted_distance((doc, score)))
             for doc, score in ranked
             if not looks_like_prompt_injection(doc.page_content)
         ]
+
+        top: List[Tuple[Document, float]] = []
+        leftovers: List[Tuple[Document, float]] = []
+        schools_seen = set()
+        for doc, adjusted in safe:
+            school = school_name(doc.metadata)
+            if school and school in schools_seen:
+                continue  # one chunk per school
+            if len(top) < self.k:
+                top.append((doc, adjusted))
+                if school:
+                    schools_seen.add(school)
+            else:
+                leftovers.append((doc, adjusted))
+
+        extras: List[Tuple[Document, float]] = []
+        if top:
+            limit = top[-1][1] * EXTRA_SCHOOL_DISTANCE_SLACK
+            for doc, adjusted in leftovers:
+                if len(extras) >= MAX_EXTRA_SCHOOL_DOCS:
+                    break
+                school = school_name(doc.metadata)
+                if school and school not in schools_seen and adjusted <= limit:
+                    extras.append((doc, adjusted))
+                    schools_seen.add(school)
+
         # Label each chunk (source type + date) for the answer prompt via a
         # copy, so the stored documents are never mutated.
         return [
@@ -634,7 +677,7 @@ class SourceWeightedRetriever(BaseRetriever):
                 page_content=doc.page_content,
                 metadata={**doc.metadata, "doc_label": doc_label(doc.metadata)},
             )
-            for doc, _ in safe[: self.k]
+            for doc, _ in top + extras
         ]
 
 
@@ -1449,6 +1492,23 @@ class F1rstAidApp:
         return "\n".join(sources)
 
     @staticmethod
+    def group_sources(docs: List[Document]) -> Tuple[List[Document], List[Document], List[Document]]:
+        """(official, school, community) for the citation expander. Official
+        includes law-firm commentary and news, which are labelled on their
+        own cards; schools are grouped so a reader can see at a glance which
+        schools a "common practice" claim rests on."""
+        official, school, community = [], [], []
+        for doc in docs:
+            tier = source_tier(doc.metadata)
+            if tier == "reddit":
+                community.append(doc)
+            elif tier == "school":
+                school.append(doc)
+            else:
+                official.append(doc)
+        return official, school, community
+
+    @staticmethod
     def _sort_by_source_priority(docs: List[Document]) -> List[Document]:
         """Re-sort retrieved docs so official sources appear before Reddit."""
         priority = {"pdf": 0, "web": 1, "school": 2, "commentary": 3, "news": 4, "reddit": 5}
@@ -1461,6 +1521,12 @@ class F1rstAidApp:
         )
 
         formatted_answer = result
+        if any(source_tier(doc.metadata) == "school" for doc in sources):
+            formatted_answer = (
+                "🏫 Note: School-specific details here come from university "
+                "international offices and apply to those schools. Confirm "
+                "with your own DSO.\n\n" + formatted_answer
+            )
         if any(doc.metadata.get("type") == "news" for doc in sources):
             formatted_answer = (
                 "📰 Note: Some of this comes from news reports, which may describe "
@@ -1520,14 +1586,9 @@ class F1rstAidApp:
             )
 
         if displayable_sources:
-            official_sources = []
-            community_sources = []
-
-            for doc in displayable_sources:
-                if doc.metadata.get("type") == "reddit":
-                    community_sources.append(doc)
-                else:
-                    official_sources.append(doc)
+            official_sources, school_sources, community_sources = self.group_sources(
+                displayable_sources
+            )
 
             # Collapsed by default -- reported live: with sources always
             # expanded, the source cards routinely took more vertical space
@@ -1535,7 +1596,7 @@ class F1rstAidApp:
             # rather than like supporting detail. An expander keeps the
             # count visible (so "sources exist, click to check them" is
             # still obvious) without forcing every answer to be that long.
-            total = len(official_sources) + len(community_sources)
+            total = len(official_sources) + len(school_sources) + len(community_sources)
             label = f"📚 {total} source{'s' if total != 1 else ''}"
             with st.expander(label, expanded=False):
                 if official_sources:
@@ -1545,11 +1606,21 @@ class F1rstAidApp:
                         unsafe_allow_html=True,
                     )
 
+                if school_sources:
+                    st.markdown("**University International Offices (school-specific)**")
+                    st.markdown(
+                        self.format_sources(
+                            school_sources, start_index=len(official_sources) + 1
+                        ),
+                        unsafe_allow_html=True,
+                    )
+
                 if community_sources:
                     st.markdown("**Community Experiences (Reddit)**")
                     st.markdown(
                         self.format_sources(
-                            community_sources, start_index=len(official_sources) + 1
+                            community_sources,
+                            start_index=len(official_sources) + len(school_sources) + 1,
                         ),
                         unsafe_allow_html=True,
                     )

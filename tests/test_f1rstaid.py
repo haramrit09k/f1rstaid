@@ -1181,3 +1181,101 @@ def test_relevance_prompt_teaches_the_h1b_scope_boundary():
 
     assert "-> True (the F-1 to H-1B transition" in seen[0]
     assert "PERM" in seen[0] and "-> False" in seen[0]
+
+
+# --- cross-school generalisation: diversity in retrieval, prompt rule, grouping ---
+
+def _school_doc(text, host, path="/opt"):
+    return Document(page_content=text, metadata={"source": f"https://{host}{path}", "type": "web"})
+
+
+def _retrieve(candidates, k=3):
+    class _DB:
+        def similarity_search_with_score(self, query, k):
+            return candidates
+
+    retriever = SourceWeightedRetriever.construct(db=_DB(), k=k, candidate_pool_size=30)
+    return retriever._get_relevant_documents("opt")
+
+
+def test_retriever_returns_at_most_one_chunk_per_school():
+    docs = _retrieve(
+        [
+            (_school_doc("columbia a", "isso.columbia.edu", "/a"), 0.30),
+            (_school_doc("columbia b", "isso.columbia.edu", "/b"), 0.31),
+            (_school_doc("usc a", "ois.usc.edu", "/a"), 0.32),
+        ],
+        k=3,
+    )
+    assert [d.page_content for d in docs] == ["columbia a", "usc a"]
+
+
+def test_retriever_adds_extra_schools_beyond_k_when_nearly_as_relevant():
+    federal = lambda t, d: (Document(page_content=t, metadata={"source": "https://www.uscis.gov/x", "type": "web"}), d)  # noqa: E731
+    # adjusted distance = distance / weight (web 2.2, school 1.8): the last
+    # regular result sits at 0.32/2.2 ~ 0.145, so the slack limit is ~0.182;
+    # columbia (0.28/1.8 ~ 0.156) and usc (0.285/1.8 ~ 0.158) qualify, and
+    # purdue would too but the cap is two extras.
+    docs = _retrieve(
+        [
+            federal("fed 1", 0.30),
+            federal("fed 2", 0.31),
+            federal("fed 3", 0.32),
+            (_school_doc("columbia", "isso.columbia.edu"), 0.28),
+            (_school_doc("usc", "ois.usc.edu"), 0.285),
+            (_school_doc("purdue", "www.purdue.edu"), 0.29),
+        ],
+        k=3,
+    )
+    assert [d.page_content for d in docs] == ["fed 1", "fed 2", "fed 3", "columbia", "usc"]
+
+
+def test_retriever_does_not_pad_with_irrelevant_school_pages():
+    federal = Document(page_content="fed", metadata={"source": "https://www.uscis.gov/x", "type": "web"})
+    docs = _retrieve(
+        [
+            (federal, 0.10),
+            (_school_doc("far school page", "isso.columbia.edu"), 5.0),
+        ],
+        k=1,
+    )
+    assert [d.page_content for d in docs] == ["fed"]
+
+
+def test_retriever_caps_extra_school_docs_at_two():
+    docs = _retrieve(
+        [(_school_doc("main", "isso.columbia.edu"), 0.30)]
+        + [(_school_doc(f"extra {h}", h), 0.31) for h in ("ois.usc.edu", "www.purdue.edu", "www.bu.edu", "oips.gmu.edu")],
+        k=1,
+    )
+    assert len(docs) == 1 + f1rstaid.MAX_EXTRA_SCHOOL_DOCS
+
+
+def test_prompt_allows_cross_school_generalisation_but_only_with_two_schools():
+    system = QA_PROMPT.format_messages(context="c", question="q")[0].content
+    assert "TWO OR MORE different schools" in system
+    assert "common practice and not law" in system
+    assert "confirm with their own DSO" in system
+    assert "never present one school's practice as a general rule" in system
+    assert "Always take federal rules only from official documents" in system
+
+
+def test_group_sources_splits_official_school_and_community():
+    docs = [
+        Document(page_content="f", metadata={"source": "https://www.uscis.gov/x", "type": "web"}),
+        Document(page_content="n", metadata={"source": "https://news.example/x", "type": "news"}),
+        Document(page_content="s", metadata={"source": "https://ois.usc.edu/x", "type": "web"}),
+        Document(page_content="r", metadata={"source": "https://reddit.com/x", "type": "reddit"}),
+    ]
+    official, school, community = F1rstAidApp.group_sources(docs)
+    assert [d.page_content for d in official] == ["f", "n"]
+    assert [d.page_content for d in school] == ["s"]
+    assert [d.page_content for d in community] == ["r"]
+
+
+def test_answers_using_school_sources_get_a_confirm_with_your_dso_note():
+    app = F1rstAidApp(AppConfig())
+    school = [Document(page_content="s", metadata={"source": "https://ois.usc.edu/x", "type": "web"})]
+    assert "Confirm with your own DSO" in app.format_answer("Answer.", school)
+    federal = [Document(page_content="f", metadata={"source": "https://www.uscis.gov/x", "type": "web"})]
+    assert "School-specific" not in app.format_answer("Answer.", federal)

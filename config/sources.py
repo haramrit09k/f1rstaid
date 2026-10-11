@@ -90,3 +90,59 @@ WEBSITE_SOURCES = [
     "https://www.nafsa.org/professional-resources/browse-by-interest/preparing-f-1-visa-interview",
     "https://www.nafsa.org/professional-resources/learning-and-training/us-visa-and-entry-process-students-and-scholars",
 ]
+
+
+# --- F-1 -> H-1B transition (cap-gap, change of status, cap registration) -----
+# Official pages first. These URLs are best-effort (they could not be fetched
+# when added): a page that fails is logged by the weekly run, so check its log
+# after the first run and fix or drop any that 404.
+H1B_TRANSITION_SOURCES = [
+    # USCIS: the authority for registration dates, selection and fees
+    "https://www.uscis.gov/working-in-the-united-states/h-1b-specialty-occupations",
+    "https://www.uscis.gov/working-in-the-united-states/h-1b-specialty-occupations/h-1b-cap-season",
+    "https://www.uscis.gov/h-1b-electronic-registration-process",
+    "https://www.uscis.gov/policy-manual/volume-2-part-h",
+    # Department of Labor: LCA / prevailing wage
+    "https://flag.dol.gov/programs/H-1B",
+    # State Department: student-visa news and appointment/processing changes
+    "https://travel.state.gov/content/travel/en/News/visas-news.html",
+    # NAFSA regulatory updates (association analysis of SEVP/USCIS changes)
+    "https://www.nafsa.org/regulatory-information",
+    # Law-firm alerts (fast, but secondary and self-interested: ranked below
+    # official pages, see kb_freshness.COMMENTARY_DOMAINS)
+    "https://www.bal.com/news-articles/",
+]
+
+# International-student office pages of universities: ten with very large
+# international enrollments (chosen from memory of IIE Open Doors rankings,
+# not re-checked) plus schools the project owner's circle attended. They describe each school's OWN procedures (portals,
+# deadlines, DSO workflow), so the app labels them by school and tells the
+# model they apply only to that school -- see kb_freshness.SCHOOL_DOMAINS,
+# which must have an entry for every domain used here (a test enforces it).
+# Root/landing URLs, best effort: they could not be fetched when added, so a
+# 404 in the weekly run's log means the page moved -- replace it with the
+# school's current OPT/CPT page. Add your own school here for the most
+# useful answers.
+SCHOOL_GUIDANCE_SOURCES = [
+    "https://www.nyu.edu/students/student-information-and-resources/global-services.html",
+    "https://international.northeastern.edu/ogs/",
+    "https://isso.columbia.edu/",
+    "https://issc.asu.edu/",
+    "https://ois.usc.edu/",
+    "https://isss.illinois.edu/",
+    "https://www.cmu.edu/oie/",
+    "https://www.purdue.edu/ogsp/",
+    "https://www.internationalcenter.ucla.edu/",
+    "https://www.bu.edu/isso/",
+    # Schools the project owner and their friends attended (best-guess URLs,
+    # same caveat as above).
+    "https://oips.gmu.edu/",
+    "https://www.nec.edu/international-students/",
+    "https://global.utdallas.edu/iss/",
+    "https://www.uta.edu/international/",
+    "https://global.rutgers.edu/",
+    "https://www.njit.edu/global/",
+    "https://www.stevens.edu/international",
+]
+
+WEBSITE_SOURCES = WEBSITE_SOURCES + H1B_TRANSITION_SOURCES + SCHOOL_GUIDANCE_SOURCES

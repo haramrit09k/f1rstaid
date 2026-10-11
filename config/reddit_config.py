@@ -40,7 +40,7 @@ REDDIT_CONFIG = {
     "user_agent": get_secret("reddit", "user_agent") or "f1rstaid:v1.0",
 }
 
-SUBREDDITS = ["f1visa", "optcpt", "immigration", "internationalstudents"]
+SUBREDDITS = ["f1visa", "optcpt", "immigration", "internationalstudents", "h1b"]
 
 SEARCH_TERMS = [
     "Day 1 CPT",
@@ -52,4 +52,8 @@ SEARCH_TERMS = [
     "STEM OPT",
     "F1 transfer",
     "F1 grace period",
+    "H-1B lottery",
+    "H1B cap registration",
+    "cap gap",
+    "F1 to H1B change of status",
 ]

@@ -102,7 +102,7 @@ git push heroku main
 
 Visitors get 5 free questions on the owner's `OPENAI_API_KEY`. The in-app limits (5 per session, 15 per IP per day, 50 per day overall) are soft:
 
-- **Persist the daily counters (recommended):** `heroku addons:create heroku-redis:mini`. This sets `REDIS_URL`, and the counters then survive dyno restarts and are shared across dynos. Without it they fall back to local JSON files that are wiped on every restart.
+- **Persist the daily counters (recommended):** `heroku addons:create heroku-redis:mini`. This sets `REDIS_URL` (the Redis Cloud add-on sets `REDISCLOUD_URL`, which is read too), and the counters then survive dyno restarts and are shared across dynos. Without it they fall back to local JSON files that are wiped on every restart.
 - **Set a spending limit in the OpenAI dashboard** (Billing -> Limits). This is the only hard cap; the app can't enforce one. When credits run out, the app shows a "usage limit" message and doesn't charge visitors a free question.
 
 ## 📁 Project Structure

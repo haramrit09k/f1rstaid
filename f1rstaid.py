@@ -275,7 +275,7 @@ PER_IP_DAILY_LIMIT = 15
 USAGE_TRACKER_PATH = Path("usage_tracker.json")
 IP_TRACKER_PATH = Path("ip_usage_tracker.json")
 
-# With REDIS_URL set (e.g. the Heroku Redis add-on) the shared-key and
+# With REDIS_URL or REDISCLOUD_URL set (Heroku Redis / Redis Cloud add-ons) the shared-key and
 # per-IP counters live in Redis: atomic INCRs that survive dyno restarts and
 # are shared across dynos. Without it (or if Redis errors) they fall back to
 # the JSON files above, which are per-dyno and wiped on every restart.
@@ -284,9 +284,11 @@ _redis_client_cache: Dict[str, object] = {}
 
 
 def _get_redis():
-    """Lazily-created Redis client, or None if REDIS_URL is unset or the
+    """Lazily-created Redis client, or None if no Redis URL is set or the
     client library/server isn't usable. Never raises."""
-    url = os.getenv("REDIS_URL")
+    # REDIS_URL is set by Heroku Redis; the Redis Cloud add-on sets
+    # REDISCLOUD_URL instead.
+    url = os.getenv("REDIS_URL") or os.getenv("REDISCLOUD_URL")
     if not url:
         return None
     if url not in _redis_client_cache:

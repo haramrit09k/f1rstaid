@@ -732,7 +732,16 @@ def test_shared_key_counter_falls_back_to_file_when_redis_errors(monkeypatch, tm
 
 def test_get_redis_is_none_without_redis_url(monkeypatch):
     monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.delenv("REDISCLOUD_URL", raising=False)
     assert f1rstaid._get_redis() is None
+
+
+def test_get_redis_reads_rediscloud_url(monkeypatch):
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv("REDISCLOUD_URL", "redis://default:pw@example.invalid:6379")
+    monkeypatch.setattr(f1rstaid, "_redis_client_cache", {})
+
+    assert f1rstaid._get_redis() is not None
 
 
 # --- per-IP daily limit ---

@@ -277,8 +277,8 @@ from kb_freshness import SCHOOL_DOMAINS, school_name  # noqa: E402
 
 
 def test_school_sources_each_map_to_a_named_school_and_are_ingested():
-    assert len(sources.SCHOOL_GUIDANCE_SOURCES) == 14
-    assert len(set(sources.SCHOOL_GUIDANCE_SOURCES)) == 14
+    assert len(sources.SCHOOL_GUIDANCE_SOURCES) >= 14
+    assert len(set(sources.SCHOOL_GUIDANCE_SOURCES)) == len(sources.SCHOOL_GUIDANCE_SOURCES)
     for url in sources.SCHOOL_GUIDANCE_SOURCES:
         assert url.startswith("https://")
         assert school_name({"source": url}) is not None, url
@@ -327,6 +327,9 @@ def test_answer_prompt_says_school_guidance_applies_to_that_school_only():
         ("https://www.nec.edu/international-students/", "New England College"),
         ("https://global.utdallas.edu/iss/", "UT Dallas"),
         ("https://www.uta.edu/international/", "UT Arlington"),
+        ("https://global.rutgers.edu/", "Rutgers University"),
+        ("https://www.njit.edu/global/", "NJIT"),
+        ("https://www.stevens.edu/international", "Stevens Institute of Technology"),
     ],
 )
 def test_added_schools_are_recognised(url, name):

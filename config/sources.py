@@ -115,7 +115,7 @@ H1B_TRANSITION_SOURCES = [
 
 # International-student office pages of universities: ten with very large
 # international enrollments (chosen from memory of IIE Open Doors rankings,
-# not re-checked). They describe each school's OWN procedures (portals,
+# not re-checked) plus schools the project owner's circle attended. They describe each school's OWN procedures (portals,
 # deadlines, DSO workflow), so the app labels them by school and tells the
 # model they apply only to that school -- see kb_freshness.SCHOOL_DOMAINS,
 # which must have an entry for every domain used here (a test enforces it).
@@ -140,6 +140,9 @@ SCHOOL_GUIDANCE_SOURCES = [
     "https://www.nec.edu/international-students/",
     "https://global.utdallas.edu/iss/",
     "https://www.uta.edu/international/",
+    "https://global.rutgers.edu/",
+    "https://www.njit.edu/global/",
+    "https://www.stevens.edu/international",
 ]
 
 WEBSITE_SOURCES = WEBSITE_SOURCES + H1B_TRANSITION_SOURCES + SCHOOL_GUIDANCE_SOURCES

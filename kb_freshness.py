@@ -195,6 +195,9 @@ SCHOOL_DOMAINS = {
     "nec.edu": "New England College",
     "utdallas.edu": "UT Dallas",
     "uta.edu": "UT Arlington",
+    "rutgers.edu": "Rutgers University",
+    "njit.edu": "NJIT",
+    "stevens.edu": "Stevens Institute of Technology",
 }
 
 

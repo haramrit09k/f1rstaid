@@ -1,4 +1,5 @@
 from html import escape
+import hashlib
 import json
 import logging
 import os
@@ -266,7 +267,67 @@ EXAMPLE_QUESTIONS = [
 #      own behalf.
 FREE_TRIAL_QUERY_LIMIT = 5  # per browser session, using the shared/owner key
 DAILY_SHARED_KEY_LIMIT = 50  # total shared-key queries per day, all sessions
+# Per client IP per day. Deliberately looser than the per-session limit:
+# students on one campus network share an IP, so a tight cap would lock out
+# legitimate users -- this only exists to stop "open a new incognito window
+# for 5 more questions" from being unlimited.
+PER_IP_DAILY_LIMIT = 15
 USAGE_TRACKER_PATH = Path("usage_tracker.json")
+IP_TRACKER_PATH = Path("ip_usage_tracker.json")
+
+# With REDIS_URL or REDISCLOUD_URL set (Heroku Redis / Redis Cloud add-ons) the shared-key and
+# per-IP counters live in Redis: atomic INCRs that survive dyno restarts and
+# are shared across dynos. Without it (or if Redis errors) they fall back to
+# the JSON files above, which are per-dyno and wiped on every restart.
+_REDIS_KEY_TTL_SECONDS = 2 * 24 * 3600
+_redis_client_cache: Dict[str, object] = {}
+
+
+def _get_redis():
+    """Lazily-created Redis client, or None if no Redis URL is set or the
+    client library/server isn't usable. Never raises."""
+    # REDIS_URL is set by Heroku Redis; the Redis Cloud add-on sets
+    # REDISCLOUD_URL instead.
+    url = os.getenv("REDIS_URL") or os.getenv("REDISCLOUD_URL")
+    if not url:
+        return None
+    if url not in _redis_client_cache:
+        try:
+            import redis
+
+            kwargs = {"ssl_cert_reqs": None} if url.startswith("rediss://") else {}
+            _redis_client_cache[url] = redis.Redis.from_url(
+                url, socket_timeout=2, socket_connect_timeout=2, **kwargs
+            )
+        except Exception as e:
+            logging.error(f"Redis unavailable, using file counters: {e}")
+            _redis_client_cache[url] = None
+    return _redis_client_cache[url]
+
+
+def _redis_read(key: str) -> Optional[int]:
+    client = _get_redis()
+    if client is None:
+        return None
+    try:
+        value = client.get(key)
+        return int(value) if value is not None else 0
+    except Exception as e:
+        logging.error(f"Redis read failed, using file counter: {e}")
+        return None
+
+
+def _redis_incr(key: str) -> Optional[int]:
+    client = _get_redis()
+    if client is None:
+        return None
+    try:
+        count = int(client.incr(key))
+        client.expire(key, _REDIS_KEY_TTL_SECONDS)
+        return count
+    except Exception as e:
+        logging.error(f"Redis increment failed, using file counter: {e}")
+        return None
 
 
 def _read_daily_count(path: Path) -> int:
@@ -294,11 +355,66 @@ def _increment_daily_count(path: Path) -> int:
 
 
 def _read_daily_shared_key_usage() -> int:
-    return _read_daily_count(USAGE_TRACKER_PATH)
+    count = _redis_read(f"f1rstaid:usage:{date.today()}")
+    return count if count is not None else _read_daily_count(USAGE_TRACKER_PATH)
 
 
 def _increment_daily_shared_key_usage() -> int:
-    return _increment_daily_count(USAGE_TRACKER_PATH)
+    count = _redis_incr(f"f1rstaid:usage:{date.today()}")
+    return count if count is not None else _increment_daily_count(USAGE_TRACKER_PATH)
+
+
+def _client_ip() -> Optional[str]:
+    """Best-effort client IP. Heroku's router appends the real client
+    address as the LAST X-Forwarded-For entry; anything before it is
+    client-supplied and spoofable, so only the last one is trusted. None
+    outside a Streamlit request (tests, scripts) or when unavailable."""
+    try:
+        forwarded = st.context.headers.get("X-Forwarded-For", "")
+    except Exception:
+        return None
+    parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+    return parts[-1] if parts else None
+
+
+def _ip_key(ip: str) -> str:
+    # Hashed so no raw visitor IPs are stored.
+    return hashlib.sha256(ip.encode()).hexdigest()[:16]
+
+
+def _read_ip_usage(ip: str) -> int:
+    key = _ip_key(ip)
+    count = _redis_read(f"f1rstaid:ip:{date.today()}:{key}")
+    if count is not None:
+        return count
+    try:
+        data = json.loads(IP_TRACKER_PATH.read_text())
+        if data.get("date") == str(date.today()):
+            return int(data.get("counts", {}).get(key, 0))
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+        pass
+    return 0
+
+
+def _increment_ip_usage(ip: str) -> int:
+    key = _ip_key(ip)
+    count = _redis_incr(f"f1rstaid:ip:{date.today()}:{key}")
+    if count is not None:
+        return count
+    today = str(date.today())
+    counts: Dict[str, int] = {}
+    try:
+        data = json.loads(IP_TRACKER_PATH.read_text())
+        if data.get("date") == today:
+            counts = {k: int(v) for k, v in data.get("counts", {}).items()}
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError):
+        pass
+    counts[key] = counts.get(key, 0) + 1
+    try:
+        IP_TRACKER_PATH.write_text(json.dumps({"date": today, "counts": counts}))
+    except OSError as e:
+        logging.error(f"Failed to persist IP counter at {IP_TRACKER_PATH}: {e}")
+    return counts[key]
 
 
 def shared_key_limit_reached() -> Tuple[bool, str]:
@@ -312,6 +428,15 @@ def shared_key_limit_reached() -> Tuple[bool, str]:
             f"🚦 You've used all {FREE_TRIAL_QUERY_LIMIT} free trial questions "
             "for this session. To keep chatting, enter your own OpenAI API key "
             "in the sidebar -- get one at "
+            "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
+        )
+
+    ip = _client_ip()
+    if ip and _read_ip_usage(ip) >= PER_IP_DAILY_LIMIT:
+        return True, (
+            "🚦 This network has used up today's free trial questions. "
+            "Please try again tomorrow, or enter your own OpenAI API key in "
+            "the sidebar to continue right now -- get one at "
             "[platform.openai.com/api-keys](https://platform.openai.com/api-keys)."
         )
 
@@ -674,6 +799,10 @@ class F1rstAidApp:
         self.embeddings = None
         self.db = None
         self.llm = None
+        # Resolved in _check_environment() and passed to the OpenAI clients
+        # explicitly -- never via os.environ, which is shared by every
+        # visitor's session in this process.
+        self.api_key = None
 
     def initialize(self) -> bool:
         """Initialize the application components."""
@@ -682,7 +811,7 @@ class F1rstAidApp:
                 return False
 
             logging.info("Initializing embeddings...")
-            self.embeddings = OpenAIEmbeddings()
+            self.embeddings = OpenAIEmbeddings(api_key=self.api_key)
 
             logging.info("Loading vector store...")
             self.db = FAISS.load_local(
@@ -704,6 +833,7 @@ class F1rstAidApp:
             )
 
             self.llm = ChatOpenAI(
+                api_key=self.api_key,
                 model_name=self.config.model_name,
                 temperature=self.config.temperature,
             )
@@ -783,7 +913,7 @@ class F1rstAidApp:
         if not api_key:
             logging.error("OPENAI_API_KEY not found")
             return False
-        os.environ["OPENAI_API_KEY"] = api_key
+        self.api_key = api_key
         return True
 
     _OFF_TOPIC_EXPLANATION = (
@@ -1236,9 +1366,10 @@ def get_api_key() -> Optional[str]:
     return os.getenv("OPENAI_API_KEY")
 
 def set_api_key(api_key: str) -> None:
-    """Set API key in session state and environment."""
+    """Remember a visitor's own key for THIS session only. Deliberately not
+    written to os.environ: that's process-wide, so one visitor's key (or
+    junk text) would become every other visitor's "shared" key."""
     st.session_state.OPENAI_API_KEY = api_key
-    os.environ["OPENAI_API_KEY"] = api_key
 
 
 @st.cache_resource
@@ -1346,6 +1477,11 @@ qualified immigration attorney before acting on it.
                 ),
                 key="api_key_input"
             )
+
+            if not api_key:
+                # Field cleared (or never filled): forget any key typed
+                # earlier so the shared key and its limits apply again.
+                st.session_state.pop("OPENAI_API_KEY", None)
 
             if api_key:
                 set_api_key(api_key)
@@ -1504,6 +1640,9 @@ qualified immigration attorney before acting on it.
                             st.session_state.get("shared_key_query_count", 0) + 1
                         )
                         _increment_daily_shared_key_usage()
+                        client_ip = _client_ip()
+                        if client_ip:
+                            _increment_ip_usage(client_ip)
 
                     st.session_state.messages.append(
                         {"role": "assistant", "content": answer["result"], "answer": answer}

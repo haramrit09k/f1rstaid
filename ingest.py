@@ -19,6 +19,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 import praw
 
+from content_safety import looks_like_prompt_injection
 from config.reddit_config import REDDIT_CONFIG, SUBREDDITS, SEARCH_TERMS
 from config.sources import WEBSITE_SOURCES
 
@@ -81,6 +82,14 @@ class ContentProcessor:
         source_type = doc.metadata.get("type", "unknown")
 
         if not content or len(content) < 50 or not any(c.isalpha() for c in content):
+            return False
+
+        # Instruction-like text in a scraped page would later be shown to the
+        # model as "context" -- keep it out of the index entirely.
+        if looks_like_prompt_injection(content):
+            logging.warning(
+                f"Skipping content with prompt-injection-like text: {doc.metadata.get('source')}"
+            )
             return False
 
         if source_type == "web" and any(

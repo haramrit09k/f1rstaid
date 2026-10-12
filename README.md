@@ -4,6 +4,8 @@ A smart assistant for F-1 students navigating U.S. immigration regulations, powe
 
 **Live demo**: [f1rstaid-064025a9fcc1.herokuapp.com](https://f1rstaid-064025a9fcc1.herokuapp.com/) — try it free (a few questions on a shared key), or bring your own OpenAI key for unlimited use.
 
+**Demo video** (1.5 min walkthrough): [watch it here](https://github.com/haramrit09k/f1rstaid/blob/8f14d428e113b7b33e1040445be7cebb3a80e42e/pr-demo/f1rstaid-demo.mp4). The video lives on the `pr-assets` branch so it stays out of `main`'s history.
+
 ## 🌟 Features
 
 - **Deterministic answers where exactness matters**: five rule families (OPT/STEM-OPT unemployment day caps — including exact deadline dates, the 60-day grace period, the H-1B cap-gap extension, STEM Designated Degree List eligibility, and the 10-day SEVIS address-change deadline) are computed in plain Python instead of guessed by an LLM, each backed by a citation verified against a real, already-ingested source — not recalled from memory.
